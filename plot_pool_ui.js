@@ -1,0 +1,516 @@
+function sma(arr, n) {
+      const out = new Array(arr.length).fill(null);
+      if (arr.length < n) return out;
+      let s = 0;
+      for (let i = 0; i < n; i++) s += arr[i];
+      out[n - 1] = +(s / n).toFixed(4);
+      for (let i = n; i < arr.length; i++) {
+        s += arr[i] - arr[i - n];
+        out[i] = +(s / n).toFixed(4);
+      }
+      return out;
+    }
+
+    /** EMA；跳过前导 null，用前 period 个有效值做 SMA 种子。 */
+    function ema(values, period) {
+      const out = new Array(values.length).fill(null);
+      const k = 2 / (period + 1);
+      let prev = null;
+      const buf = [];
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        if (v == null || Number.isNaN(v)) continue;
+        if (prev === null) {
+          buf.push(v);
+          if (buf.length === period) {
+            prev = buf.reduce((a, b) => a + b, 0) / period;
+            out[i] = +prev.toFixed(4);
+          }
+        } else {
+          prev = v * k + prev * (1 - k);
+          out[i] = +prev.toFixed(4);
+        }
+      }
+      return out;
+    }
+
+    /** 国内常用 MACD(12,26,9)：DIF / DEA / MACD柱=(DIF-DEA)*2 */
+    function calcMacd(closes, fast, slow, signal) {
+      fast = fast || 12;
+      slow = slow || 26;
+      signal = signal || 9;
+      const emaFast = ema(closes, fast);
+      const emaSlow = ema(closes, slow);
+      const dif = closes.map((_, i) => {
+        if (emaFast[i] == null || emaSlow[i] == null) return null;
+        return +(emaFast[i] - emaSlow[i]).toFixed(4);
+      });
+      const dea = ema(dif, signal);
+      const macd = dif.map((d, i) => {
+        if (d == null || dea[i] == null) return null;
+        return +((d - dea[i]) * 2).toFixed(4);
+      });
+      return { dif, dea, macd };
+    }
+
+    /** 短线看近端均线，长线看中期；另一条默认隐藏，图例可点开。 */
+    function maLegendSelected(panel) {
+      const isShort = panel === 'short';
+      return {
+        MA5: isShort,
+        MA10: true,
+        MA20: true,
+        MA60: !isShort
+      };
+    }
+
+    function buildOption(stock, panel) {
+      const bars = stock.bars;
+      const dates = bars.map(b => b.date);
+      const ohlc = bars.map(b => [b.open, b.close, b.low, b.high]);
+      const amounts = bars.map(b => b.amountYi);
+      const volumes = bars.map(b => +(b.volume / 1e8).toFixed(4));
+      const closes = bars.map(b => b.close);
+      const ma5 = sma(closes, 5);
+      const ma10 = sma(closes, 10);
+      const ma20 = sma(closes, 20);
+      const ma60 = sma(closes, 60);
+      const m = calcMacd(closes, 12, 26, 9);
+      // 与 K 线一致：涨红跌绿
+      const amountColors = bars.map(b => b.close >= b.open ? '#e74c3c' : '#14b15b');
+      const volumeColors = bars.map(b => b.close >= b.open ? '#e74c3c' : '#14b15b');
+      const macdColors = m.macd.map(v => (v == null || v >= 0) ? '#e74c3c' : '#14b15b');
+
+      const amountData = amounts.map((v, i) => ({
+        value: v,
+        itemStyle: { color: amountColors[i] }
+      }));
+      const volumeData = volumes.map((v, i) => ({
+        value: v,
+        itemStyle: { color: volumeColors[i] }
+      }));
+      const macdData = m.macd.map((v, i) => ({
+        value: v,
+        itemStyle: { color: macdColors[i] }
+      }));
+      const tab = panel || (typeof currentTab !== 'undefined' ? currentTab : 'long');
+
+      return {
+        animation: false,
+        legend: {
+          data: ['K线', 'MA5', 'MA10', 'MA20', 'MA60', '成交额', '成交量', 'DIF', 'DEA', 'MACD'],
+          selected: maLegendSelected(tab),
+          top: 0,
+          textStyle: { fontSize: 11 }
+        },
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross' },
+          borderWidth: 1,
+          borderColor: '#ccc',
+          textStyle: { fontSize: 12 },
+          formatter: function (params) {
+            if (!params || !params.length) return '';
+            const i = params[0].dataIndex;
+            const b = bars[i];
+            const chg = b.open ? ((b.close - b.open) / b.open * 100).toFixed(2) : '0.00';
+            let html = `<b>${b.date}</b><br/>开 ${b.open} 高 ${b.high}<br/>低 ${b.low} 收 ${b.close} (${chg}%)` +
+              `<br/>成交额 ${b.amountYi.toFixed(4)}亿` +
+              `<br/>成交量 ${b.volume.toLocaleString()}股 (${(b.volume / 1e8).toFixed(4)}亿)`;
+            if (m.dif[i] != null) html += `<br/>DIF ${m.dif[i]}`;
+            if (m.dea[i] != null) html += `<br/>DEA ${m.dea[i]}`;
+            if (m.macd[i] != null) html += `<br/>MACD ${m.macd[i]}`;
+            for (const p of params) {
+              // 注意：不能用 startsWith('MA')，会误伤 MACD
+              if ((p.seriesName === 'MA5' || p.seriesName === 'MA10'
+                  || p.seriesName === 'MA20' || p.seriesName === 'MA60')
+                  && p.data != null && typeof p.data !== 'object')
+                html += `<br/>${p.marker}${p.seriesName} ${p.data}`;
+            }
+            return html;
+          }
+        },
+        axisPointer: { link: [{ xAxisIndex: 'all' }] },
+        grid: [
+          { left: 52, right: 18, top: 40, height: '38%' },
+          { left: 52, right: 18, top: '50%', height: '10%' },
+          { left: 52, right: 18, top: '62%', height: '10%' },
+          { left: 52, right: 18, top: '74%', height: '14%' }
+        ],
+        xAxis: [
+          {
+            type: 'category', data: dates, boundaryGap: true,
+            axisLine: { onZero: false }, splitLine: { show: false },
+            min: 'dataMin', max: 'dataMax', axisLabel: { show: false }
+          },
+          {
+            type: 'category', gridIndex: 1, data: dates, boundaryGap: true,
+            axisLine: { onZero: false }, axisTick: { show: false },
+            splitLine: { show: false }, min: 'dataMin', max: 'dataMax',
+            axisLabel: { show: false }
+          },
+          {
+            type: 'category', gridIndex: 2, data: dates, boundaryGap: true,
+            axisLine: { onZero: false }, axisTick: { show: false },
+            splitLine: { show: false }, min: 'dataMin', max: 'dataMax',
+            axisLabel: { show: false }
+          },
+          {
+            type: 'category', gridIndex: 3, data: dates, boundaryGap: true,
+            axisLine: { onZero: false }, axisTick: { show: false },
+            splitLine: { show: false }, min: 'dataMin', max: 'dataMax',
+            axisLabel: { fontSize: 10, hideOverlap: true }
+          }
+        ],
+        yAxis: [
+          {
+            scale: true, splitArea: { show: true },
+            axisLabel: { fontSize: 10 }
+          },
+          {
+            scale: true, gridIndex: 1, splitNumber: 2,
+            axisLabel: { show: false }, axisLine: { show: false },
+            axisTick: { show: false }, splitLine: { show: false }
+          },
+          {
+            scale: true, gridIndex: 2, splitNumber: 2,
+            axisLabel: { show: false }, axisLine: { show: false },
+            axisTick: { show: false }, splitLine: { show: false }
+          },
+          {
+            scale: true, gridIndex: 3, splitNumber: 3,
+            axisLabel: { fontSize: 9 }, axisLine: { show: false },
+            axisTick: { show: false }, splitLine: { show: true, lineStyle: { type: 'dashed', opacity: 0.4 } }
+          }
+        ],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: [0, 1, 2, 3], start: 0, end: 100 },
+          {
+            show: true, xAxisIndex: [0, 1, 2, 3], type: 'slider',
+            top: '92%', height: 16, start: 0, end: 100,
+            borderColor: 'transparent'
+          }
+        ],
+        series: [
+          {
+            name: 'K线',
+            type: 'candlestick',
+            data: ohlc,
+            itemStyle: {
+              color: '#e74c3c',
+              color0: '#14b15b',
+              borderColor: '#e74c3c',
+              borderColor0: '#14b15b'
+            }
+          },
+          {
+            name: 'MA5', type: 'line', data: ma5,
+            smooth: false, showSymbol: false,
+            lineStyle: { width: 1.2, color: '#16a085' },
+            itemStyle: { color: '#16a085' }
+          },
+          {
+            name: 'MA10', type: 'line', data: ma10,
+            smooth: false, showSymbol: false,
+            lineStyle: { width: 1.2, color: '#f39c12' },
+            itemStyle: { color: '#f39c12' }
+          },
+          {
+            name: 'MA20', type: 'line', data: ma20,
+            smooth: false, showSymbol: false,
+            lineStyle: { width: 1.2, color: '#3498db' },
+            itemStyle: { color: '#3498db' }
+          },
+          {
+            name: 'MA60', type: 'line', data: ma60,
+            smooth: false, showSymbol: false,
+            lineStyle: { width: 1.2, color: '#9b59b6' },
+            itemStyle: { color: '#9b59b6' }
+          },
+          {
+            name: '成交额',
+            type: 'bar',
+            xAxisIndex: 1,
+            yAxisIndex: 1,
+            data: amountData,
+            // 固定色给图例用（否则会跟 K 线一样变成默认红）
+            itemStyle: { color: '#5b8ff9' },
+            color: '#5b8ff9'
+          },
+          {
+            name: '成交量',
+            type: 'bar',
+            xAxisIndex: 2,
+            yAxisIndex: 2,
+            data: volumeData,
+            itemStyle: { color: '#1abc9c' },
+            color: '#1abc9c'
+          },
+          {
+            name: 'DIF',
+            type: 'line',
+            xAxisIndex: 3,
+            yAxisIndex: 3,
+            data: m.dif,
+            smooth: false,
+            showSymbol: false,
+            lineStyle: { width: 1.2, color: '#e6a23c' },
+            itemStyle: { color: '#e6a23c' }
+          },
+          {
+            name: 'DEA',
+            type: 'line',
+            xAxisIndex: 3,
+            yAxisIndex: 3,
+            data: m.dea,
+            smooth: false,
+            showSymbol: false,
+            lineStyle: { width: 1.2, color: '#409eff' },
+            itemStyle: { color: '#409eff' }
+          },
+          {
+            name: 'MACD',
+            type: 'bar',
+            xAxisIndex: 3,
+            yAxisIndex: 3,
+            data: macdData,
+            // 图例方块用灰紫，柱子颜色仍由 macdData 里的红/绿 itemStyle 决定
+            itemStyle: { color: '#8e44ad' },
+            color: '#8e44ad'
+          }
+        ]
+      };
+    }
+
+    /* 雪球官网图标：红底圆角方 + 白六瓣雪花（SVG 自绘） */
+    const XUEQIU_ICON_SVG =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" aria-hidden="true">' +
+      '<rect width="32" height="32" rx="7" fill="#FF2436"/>' +
+      '<g fill="#fff" transform="translate(16 16)">' +
+      // 六向对称雪花：主轴 + 两侧短枝
+      [0,60,120,180,240,300].map(function (deg) {
+        return (
+          '<g transform="rotate(' + deg + ')">' +
+          '<rect x="-1.15" y="-11.2" width="2.3" height="9.4" rx="0.7"/>' +
+          '<rect x="-3.6" y="-9.1" width="2.2" height="1.7" rx="0.5" transform="rotate(55 -2.5 -8.25)"/>' +
+          '<rect x="1.4" y="-9.1" width="2.2" height="1.7" rx="0.5" transform="rotate(-55 2.5 -8.25)"/>' +
+          '<polygon points="0,-12.4 -1.7,-9.6 1.7,-9.6"/>' +
+          '</g>'
+        );
+      }).join('') +
+      '<circle r="2.15"/>' +
+      '</g></svg>';
+
+    function xueqiuUrl(code) {
+      const prefix = code.charAt(0) === '6' ? 'SH' : 'SZ';
+      return 'https://xueqiu.com/S/' + prefix + code;
+    }
+
+    function chgClass(v) {
+      if (v == null || Number.isNaN(v)) return 'chg-flat';
+      if (v > 0) return 'chg-up';
+      if (v < 0) return 'chg-down';
+      return 'chg-flat';
+    }
+
+    function fmtPct(v, digits) {
+      if (v == null || Number.isNaN(v)) return '—';
+      const sign = v > 0 ? '+' : '';
+      return sign + v.toFixed(digits) + '%';
+    }
+
+    function fmtPrice(v) {
+      if (v == null || Number.isNaN(v)) return '—';
+      return String(v);
+    }
+
+    
+    function adviceClass(advice) {
+      if (!advice) return 'badge-advice-other';
+      if (advice.indexOf('可买入') >= 0 || advice.indexOf('可短打') >= 0) return 'badge-advice-buy';
+      if (advice.indexOf('观察') >= 0 || advice.indexOf('埋伏') >= 0) return 'badge-advice-watch';
+      if (advice.indexOf('偏强') >= 0 || advice.indexOf('风险') >= 0) return 'badge-advice-hot';
+      return 'badge-advice-other';
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function badgesHtml(s) {
+      let html = '<span class="badges">';
+      if (s.industry)
+        html += '<span class="badge badge-industry">' + escapeHtml(s.industry) + '</span>';
+      if (s.advice)
+        html += '<span class="badge badge-advice ' + adviceClass(s.advice) + '">' + escapeHtml(s.advice) + '</span>';
+      html += tipHtml(s);
+      html += '</span>';
+      return html;
+    }
+
+    function tipHtml(s) {
+      const a = s.advice || '';
+      let label = '';
+      if (a.indexOf('观察') >= 0 || a.indexOf('埋伏') >= 0) label = '进场条件';
+      else if (a.indexOf('可买入') >= 0 || a.indexOf('可短打') >= 0) label = '离场条件';
+      else return '';
+      const text = (s.when || '').trim();
+      if (!text) return '';
+      return '<span class="cond-tip"><span class="cond-label">' + label + '</span> ' + escapeHtml(text) + '</span>';
+    }
+
+    function metaHtml(s) {
+      const parts = [];
+      function chip(key, val, extraClass) {
+        const cls = extraClass ? ('metric ' + extraClass) : 'metric';
+        return (
+          '<span class="' + cls + '">' +
+          '<span class="metric-k">' + key + '</span>' +
+          '<span class="metric-v">' + val + '</span>' +
+          '</span>'
+        );
+      }
+      if (s.scoreEntry != null)
+        parts.push(chip('Entry', Number(s.scoreEntry).toFixed(3), 'metric-score'));
+      if (s.scoreSetup != null)
+        parts.push(chip('Setup', Number(s.scoreSetup).toFixed(3), 'metric-score'));
+      if (s.score != null)
+        parts.push(chip('画像', Number(s.score).toFixed(3), 'metric-score'));
+      if (s.hardScore != null)
+        parts.push(chip('硬条件', Number(s.hardScore).toFixed(3), 'metric-score'));
+      parts.push(chip('收盘', fmtPrice(s.close), chgClass(s.ret1d)));
+      parts.push(chip('今日', fmtPct(s.ret1d, 2), chgClass(s.ret1d)));
+      if (s.ret60 != null)
+        parts.push(chip('60日', fmtPct(s.ret60, 1), chgClass(s.ret60)));
+      if (s.turnover != null)
+        parts.push(chip('换手', s.turnover.toFixed(2) + '%', 'metric-turn'));
+      if (s.amountYi != null)
+        parts.push(chip('成交额', s.amountYi.toFixed(4) + '亿', 'metric-amt'));
+      if (s.volumeYi != null)
+        parts.push(chip('成交量', s.volumeYi.toFixed(4) + '亿股', 'metric-vol'));
+      if (s.floatYi != null)
+        parts.push(chip('流通', s.floatYi.toFixed(4) + '亿股', 'metric-float'));
+      if (s.bars && s.bars.length)
+        parts.push(chip('K线', String(s.bars.length) + ' 根', 'metric-bars'));
+      return '<span class="meta">' + parts.join('') + '</span>';
+    }
+
+
+    function isBuy(s) {
+      if (s.canBuy === true) return true;
+      const a = s.advice || '';
+      return a.indexOf('可买入') >= 0 || a.indexOf('可短打') >= 0;
+    }
+    function buyLabel(s) {
+      const a = s.advice || '';
+      if (a.indexOf('可短打') >= 0) return '可短打';
+      if (a.indexOf('可买入') >= 0) return '可买';
+      return '可买';
+    }
+    const chartInstances = {};
+    function disposeCharts() {
+      Object.keys(chartInstances).forEach(sid => disposeChart(sid));
+      charts = [];
+    }
+    function disposeChart(sid) {
+      const c = chartInstances[sid];
+      if (!c) return;
+      try { c.dispose(); } catch (e) {}
+      delete chartInstances[sid];
+      charts = Object.values(chartInstances);
+    }
+    function activeStocks() {
+      if (typeof TABBED !== 'undefined' && TABBED) return PANELS[currentTab] || [];
+      return STOCKS || [];
+    }
+    function render() {
+      const list = activeStocks();
+      const buyN = list.filter(isBuy).length;
+      document.getElementById('count').textContent = String(list.length);
+      const buyEl = document.getElementById('buy-count');
+      if (buyEl) buyEl.textContent = String(buyN);
+      const labelEl = document.getElementById('tab-label');
+      if (labelEl) labelEl.textContent = (TAB_LABEL && TAB_LABEL[currentTab]) || '';
+      if (typeof TABBED !== 'undefined' && TABBED) {
+        const nl = document.getElementById('n-long');
+        const ns = document.getElementById('n-short');
+        if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
+        if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+      }
+      disposeCharts();
+      const nav = document.getElementById('nav');
+      const main = document.getElementById('main');
+      nav.innerHTML = '';
+      main.innerHTML = '';
+      const prefix = (typeof TABBED !== 'undefined' && TABBED) ? (currentTab + '-') : '';
+      list.forEach((s, idx) => {
+        const sid = prefix + s.code;
+        const item = document.createElement('div');
+        item.className = 'nav-item';
+        const a = document.createElement('a');
+        a.className = isBuy(s) ? 'anchor buy' : 'anchor';
+        a.href = '#' + sid;
+        a.textContent = s.code + ' ' + s.name;
+        item.appendChild(a);
+        if (s.industry) {
+          const ind = document.createElement('span');
+          ind.className = 'nav-industry';
+          ind.textContent = s.industry;
+          ind.title = s.industry;
+          item.appendChild(ind);
+        }
+        if (isBuy(s)) {
+          const tag = document.createElement('span');
+          tag.className = 'nav-buy';
+          tag.textContent = buyLabel(s);
+          item.appendChild(tag);
+        }
+        const xq = document.createElement('a');
+        xq.className = 'xq-link';
+        xq.href = xueqiuUrl(s.code);
+        xq.target = '_blank';
+        xq.rel = 'noopener noreferrer';
+        xq.title = '在雪球打开 ' + s.code + ' ' + s.name;
+        xq.setAttribute('aria-label', '雪球 ' + s.code);
+        xq.innerHTML = XUEQIU_ICON_SVG;
+        item.appendChild(xq);
+        nav.appendChild(item);
+        const section = document.createElement('section');
+        section.className = 'card';
+        section.id = sid;
+        section.innerHTML =
+          '<div class="card-head"><h2>' + escapeHtml(s.code + ' ' + s.name) + '</h2>' +
+          badgesHtml(s) +
+          metaHtml(s) + '</div>' +
+          '<div class="chart-wrap open" id="chart-wrap-' + sid + '">' +
+          (s.bars && s.bars.length
+            ? '<div class="chart" id="chart-' + sid + '"></div>'
+            : '<p class="chart-error">无K线数据</p>') +
+          '</div>';
+        main.appendChild(section);
+        if (s.bars && s.bars.length) {
+          const el = document.getElementById('chart-' + sid);
+          const chart = echarts.init(el, null, { renderer: 'canvas' });
+          chart.setOption(buildOption(s, currentTab));
+          chartInstances[sid] = chart;
+        }
+      });
+      charts = Object.values(chartInstances);
+    }
+    function bindTabs() {
+      if (typeof TABBED === 'undefined' || !TABBED) return;
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.getAttribute('data-tab');
+          if (!tab || tab === currentTab) return;
+          currentTab = tab;
+          document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+          render();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+      });
+    }

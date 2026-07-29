@@ -1,0 +1,63 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Matplotlib / local tool caches
+.mplconfig/
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# ---- Market data & generated artifacts (do not commit) ----
+# Full OHLCV (GB-scale)
+data/daily_raw/
+
+# Daily signal pool HTML / CSV outputs
+signal_pool/
+
+# Regenerable board / stock reference dumps
+data/*.csv
+
+# Analysis / scan / backtest outputs that scripts write under data/
+data/*_signals.csv
+data/*_watch.csv
+data/*_entries.csv
+data/*_compare.csv
+data/*_now.csv
+data/*_trades.csv
+data/*_summary.*
+data/best_rally_segment.csv
+data/pre_rally_*
+data/short_burst_watch.csv
+data/short_burst_feature_compare.csv
+data/rally_buy_signals.csv
+
+# Keep curated short-burst bands (needed by short screener)
+!data/short_burst_feature_bands.json
+
+# Misc local junk
+*.log
+*.tmp
+*.bak
+.cache/
