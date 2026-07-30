@@ -72,38 +72,73 @@ def resolve_asof() -> str:
         return str(pd.to_datetime(df["日期"]).max().date())
 
 
-def run_update(force: bool = False) -> None:
+def run_update(force: bool = False, *, quality: str = "final") -> None:
     cmd = [PYTHON, str(ROOT / "update_daily.py")]
     if force:
         cmd.append("--force")
     db = ROOT / "data" / "db" / "daily.db"
     if db.exists() and db.stat().st_size > 0:
         cmd.append("--sqlite")
-    log(f"[1/4] 更新日线: {' '.join(cmd)}")
+    log(f"[1/4] 更新日线: {' '.join(cmd)}  quality={quality}")
     subprocess.run(cmd, cwd=str(ROOT), check=True)
+    # 成功后记下「哪一档」写入了当日，避免把 preview 当成收盘正式数据
+    asof = None
+    try:
+        from update_daily import latest_trade_date
+
+        asof = latest_trade_date()
+    except Exception:
+        asof = datetime.now().strftime("%Y-%m-%d")
+    write_last_update(asof, quality)
 
 
-def db_already_current() -> bool:
-    """SQLite 最新日 == 最近交易日时视为已更新。"""
-    db = ROOT / "data" / "db" / "daily.db"
-    if not (db.exists() and db.stat().st_size > 0):
+UPDATE_META = ROOT / "data" / "db" / "last_update.json"
+
+
+def read_last_update() -> dict:
+    if not UPDATE_META.exists():
+        return {}
+    try:
+        return json.loads(UPDATE_META.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_last_update(trade_date: str, quality: str) -> None:
+    UPDATE_META.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "trade_date": str(trade_date)[:10],
+        "quality": quality,  # preview | final
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    UPDATE_META.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"  日线质量标记: {payload['trade_date']} / {quality}")
+
+
+def should_skip_daily_update(mode: str) -> bool:
+    """是否跳过日更。
+
+    仅看「日期」不够：14:30 preview 用的是盘中截面，日期已是当日但并非收盘准确价。
+    规则：
+      - preview：不自动跳过（每次预览都刷盘中价）
+      - final：仅当标记为同日且 quality=final 时跳过（同日 preview 不能顶替）
+    """
+    info = read_last_update()
+    if not info:
+        return False
+    if mode != "final":
+        return False
+    if str(info.get("quality") or "") != "final":
+        return False
+    mx = str(info.get("trade_date") or "")[:10]
+    if not mx:
         return False
     try:
-        import daily_db
+        from update_daily import latest_trade_date
 
-        st = daily_db.stats()
-        mx = str(st.get("max_date") or "")[:10]
-        if not mx:
-            return False
-        try:
-            from update_daily import latest_trade_date
-
-            return mx == latest_trade_date()
-        except Exception:
-            # 无网：库日期不早于本地今天则视为可用
-            return mx >= datetime.now().strftime("%Y-%m-%d")
+        return mx == latest_trade_date()
     except Exception:
-        return False
+        return mx >= datetime.now().strftime("%Y-%m-%d")
 
 
 def stocks_from_df(
@@ -556,9 +591,9 @@ def write_meta(day_dir: Path, asof: str, mode: str, long_stat: dict, short_stat:
         "long": long_stat,
         "short": short_stat,
         "workflow": {
-            "preview": "收盘前预筛，写入 signal_pool/日期/preview/，不被 final 覆盖",
-            "final": "收盘后正式截面，写入 signal_pool/日期/（与 preview 并列）",
-            "note": "preview 与 final 名单可能不一致；对比时看同日 preview/ 与根目录",
+            "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/",
+            "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更",
+            "note": "不能用「库最大日期=今日」判断准确——preview 也会写成今日",
         },
     }
     path = day_dir / "meta.json"
@@ -634,7 +669,7 @@ def main() -> None:
     parser.add_argument(
         "--force-update",
         action="store_true",
-        help="强制重写当日日线（默认：库已是最新则跳过更新；否则增量 upsert）",
+        help="强制重拉当日日线并按当前 mode（preview/final）重写质量标记",
     )
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
@@ -740,11 +775,18 @@ def main() -> None:
 
     if not args.skip_update:
         if args.force_update:
-            run_update(force=True)
-        elif db_already_current():
-            log("[1/4] 日线已是最新，跳过更新（需要重拉加 --force-update）")
+            # 强制重拉并按当前 mode 记质量档
+            run_update(force=True, quality=mode)
+        elif should_skip_daily_update(mode):
+            info = read_last_update()
+            log(
+                f"[1/4] 跳过日线更新：已有同日 final"
+                f"（{info.get('trade_date')} @ {info.get('updated_at')}；"
+                f"preview 不会跳过，可用 --force-update 强刷）"
+            )
         else:
-            run_update(force=False)
+            # preview / 未做过 final：必须 force，才能覆盖盘中写入的当日 bar
+            run_update(force=True, quality=mode)
     else:
         log("[1/4] 跳过日线更新")
 
