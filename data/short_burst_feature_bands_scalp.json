@@ -97,7 +97,7 @@
     {
       "feature": "距20日高点%",
       "lo": -14.0,
-      "hi": -2.5,
+      "hi": -5.0,
       "weight": 1.6
     },
     {
@@ -121,15 +121,19 @@
   ],
   "min_score": 0.72,
   "min_hard": 0.75,
-  "name": "short_burst_default",
-  "note": "默认短线画像；出场 +15%/-3%/最多持有8日（次日开盘买）",
+  "name": "short_burst_scalp",
+  "note": "策略1 高胜率小目标: 入场同Strict(soft≥0.85/Top1/距20高≤-5%); 出场+6%/-3%/持有最多8日。小赚就跑。",
+  "daily_top_k": 1,
+  "rank_hard_weight": 1.2,
   "exit": {
     "entry": "open",
-    "target": 0.15,
+    "target": 0.06,
     "stop": 0.03,
     "hold": 8,
     "cost_bps": 15
   },
-  "signal_hard": 0.85,
-  "signal_soft": 0.72
+  "signal_hard": 0.95,
+  "signal_soft": 0.85,
+  "watch_hard": 0.85,
+  "watch_soft": 0.7999999999999999
 }

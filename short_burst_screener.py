@@ -115,9 +115,9 @@ def evaluate(
         stage = "可短打"
         can = True
         ex = bands.get("exit") or {}
-        tp = float(ex.get("target", 0.08)) * 100
+        tp = float(ex.get("target", 0.15)) * 100
         sl = float(ex.get("stop", 0.03)) * 100
-        hold = int(ex.get("hold", 5))
+        hold = int(ex.get("hold", 8))
         when = (
             f"硬条件+画像都过。计划：轻仓短打；目标约+{tp:.0f}%减仓；"
             f"盘中相对成本回撤破约-{sl:.0f}%离场；满{hold}日未达目标评估离场。"

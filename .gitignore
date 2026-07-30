@@ -63,6 +63,15 @@ data/rally_buy_signals.csv
 !data/short_burst_feature_bands_hw.json
 !data/short_burst_feature_bands_top3.json
 !data/short_burst_feature_bands_top2.json
+!data/short_burst_feature_bands_strict.json
+!data/short_burst_feature_bands_strict_alt.json
+!data/short_burst_feature_bands_strict_x.json
+!data/short_burst_feature_bands_strict_r3.json
+!data/short_burst_feature_bands_scalp.json
+!data/short_strategies.json
+!data/images/
+!data/images/**
+
 
 # Misc local junk
 *.log

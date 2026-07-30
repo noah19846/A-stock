@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "daily_html": ["default", "strict", "r3"],
+  "strategies": [
+    {
+      "id": "default",
+      "title": "默认",
+      "bands": "data/short_burst_feature_bands.json",
+      "style": "默认短线画像",
+      "entry": "soft≥0.72 / hard≥0.85 / 无TopK",
+      "exit": "+15% / -3% / 满8日 / 次日开盘买",
+      "lot_hint_cny": 50000
+    },
+    {
+      "id": "scalp",
+      "title": "高胜率小目标",
+      "bands": "data/short_burst_feature_bands_scalp.json",
+      "style": "胜率优先，小赚就跑",
+      "entry": "同Strict：soft≥0.85 / hard≥0.95 / Top1 / 距20高≤-5%",
+      "exit": "+6% / -3% / 满8日 / 次日开盘买",
+      "lot_hint_cny": 50000
+    },
+    {
+      "id": "strict",
+      "title": "Strict",
+      "bands": "data/short_burst_feature_bands_strict.json",
+      "style": "少做吃大肉",
+      "entry": "soft≥0.85 / hard≥0.95 / Top1 / 距20高≤-5%",
+      "exit": "+15% / -3% / 满8日 / 次日开盘买",
+      "lot_hint_cny": 50000
+    },
+    {
+      "id": "r3",
+      "title": "Strict_r3",
+      "bands": "data/short_burst_feature_bands_strict_r3.json",
+      "style": "更严入场吃大肉",
+      "entry": "Strict + 前3日涨幅%≤-2%",
+      "exit": "+15% / -3% / 满8日 / 次日开盘买",
+      "lot_hint_cny": 50000
+    }
+  ]
+}

@@ -282,24 +282,10 @@ function sma(arr, n) {
       };
     }
 
-    /* 雪球官网图标：红底圆角方 + 白六瓣雪花（SVG 自绘） */
+    /* 雪球圆形标：data/images/xueqiu_mark.png（构建时内联） */
+    const XUEQIU_ICON_IMG = '__XUEQIU_DATA_URI__';
     const XUEQIU_ICON_SVG =
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" aria-hidden="true">' +
-      '<rect width="32" height="32" rx="7" fill="#FF2436"/>' +
-      '<g fill="#fff" transform="translate(16 16)">' +
-      // 六向对称雪花：主轴 + 两侧短枝
-      [0,60,120,180,240,300].map(function (deg) {
-        return (
-          '<g transform="rotate(' + deg + ')">' +
-          '<rect x="-1.15" y="-11.2" width="2.3" height="9.4" rx="0.7"/>' +
-          '<rect x="-3.6" y="-9.1" width="2.2" height="1.7" rx="0.5" transform="rotate(55 -2.5 -8.25)"/>' +
-          '<rect x="1.4" y="-9.1" width="2.2" height="1.7" rx="0.5" transform="rotate(-55 2.5 -8.25)"/>' +
-          '<polygon points="0,-12.4 -1.7,-9.6 1.7,-9.6"/>' +
-          '</g>'
-        );
-      }).join('') +
-      '<circle r="2.15"/>' +
-      '</g></svg>';
+      '<img src="' + XUEQIU_ICON_IMG + '" width="14" height="14" alt="" draggable="false"/>';
 
     function xueqiuUrl(code) {
       const prefix = code.charAt(0) === '6' ? 'SH' : 'SZ';
@@ -327,10 +313,20 @@ function sma(arr, n) {
     
     function adviceClass(advice) {
       if (!advice) return 'badge-advice-other';
-      if (advice.indexOf('可买入') >= 0 || advice.indexOf('可短打') >= 0) return 'badge-advice-buy';
-      if (advice.indexOf('观察') >= 0 || advice.indexOf('埋伏') >= 0) return 'badge-advice-watch';
+      if (advice.indexOf('可买入') >= 0 || advice.indexOf('可短打') >= 0 || advice === '买入')
+        return 'badge-advice-buy';
+      if (advice.indexOf('观察') >= 0 || advice.indexOf('埋伏') >= 0 || advice === '观察')
+        return 'badge-advice-watch';
       if (advice.indexOf('偏强') >= 0 || advice.indexOf('风险') >= 0) return 'badge-advice-hot';
       return 'badge-advice-other';
+    }
+
+    /** 页面展示用阶段文案（底层 stage 不变） */
+    function displayAdvice(s) {
+      const a = s.advice || '';
+      if (a.indexOf('观察埋伏') >= 0) return '观察';
+      if (a.indexOf('可短打') >= 0) return '买入';
+      return a;
     }
 
     function escapeHtml(s) {
@@ -341,14 +337,51 @@ function sma(arr, n) {
         .replace(/"/g, '&quot;');
     }
 
+    function strategyClass(id) {
+      const k = String(id || '').toLowerCase();
+      if (k === 'strict') return 'badge-strategy-strict';
+      if (k === 'r3') return 'badge-strategy-r3';
+      if (k === 'scalp') return 'badge-strategy-scalp';
+      return 'badge-strategy-default';
+    }
+    function navStrategyClass(id) {
+      const k = String(id || '').toLowerCase();
+      if (k === 'strict') return 'nav-strategy nav-strategy-strict';
+      if (k === 'r3') return 'nav-strategy nav-strategy-r3';
+      if (k === 'scalp') return 'nav-strategy nav-strategy-scalp';
+      return 'nav-strategy nav-strategy-default';
+    }
+    /** 展示用策略标签：隐藏「默认」 */
+    function visibleStrategies(s) {
+      const tags = s.strategyTags || [];
+      const ids = s.strategyIds || [];
+      const out = [];
+      for (let i = 0; i < tags.length; i++) {
+        const id = String(ids[i] || tags[i] || '').toLowerCase();
+        const title = String(tags[i] || '');
+        if (id === 'default' || title === '默认') continue;
+        out.push({ id: ids[i] || tags[i], title: title });
+      }
+      return out;
+    }
+
     function badgesHtml(s) {
       let html = '<span class="badges">';
       if (s.industry)
         html += '<span class="badge badge-industry">' + escapeHtml(s.industry) + '</span>';
-      if (s.advice)
-        html += '<span class="badge badge-advice ' + adviceClass(s.advice) + '">' + escapeHtml(s.advice) + '</span>';
+      const adviceShow = displayAdvice(s);
+      if (adviceShow)
+        html += '<span class="badge badge-advice ' + adviceClass(s.advice || adviceShow) + '">' + escapeHtml(adviceShow) + '</span>';
       html += tipHtml(s);
       html += '</span>';
+      const strats = visibleStrategies(s);
+      if (strats.length) {
+        html += '<span class="badges badges-strategy">';
+        for (let i = 0; i < strats.length; i++) {
+          html += '<span class="badge badge-strategy ' + strategyClass(strats[i].id) + '">' + escapeHtml(strats[i].title) + '</span>';
+        }
+        html += '</span>';
+      }
       return html;
     }
 
@@ -405,13 +438,23 @@ function sma(arr, n) {
       const a = s.advice || '';
       return a.indexOf('可买入') >= 0 || a.indexOf('可短打') >= 0;
     }
+    function isWatch(s) {
+      const a = s.advice || '';
+      return a.indexOf('观察埋伏') >= 0 || a === '观察';
+    }
     function buyLabel(s) {
       const a = s.advice || '';
-      if (a.indexOf('可短打') >= 0) return '可短打';
+      if (a.indexOf('可短打') >= 0) return '买入';
       if (a.indexOf('可买入') >= 0) return '可买';
-      return '可买';
+      return '买入';
+    }
+    function watchLabel(s) {
+      return '观察';
     }
     const chartInstances = {};
+    const panelBuilt = { long: false, short: false };
+    let panesReady = false;
+
     function disposeCharts() {
       Object.keys(chartInstances).forEach(sid => disposeChart(sid));
       charts = [];
@@ -427,47 +470,102 @@ function sma(arr, n) {
       if (typeof TABBED !== 'undefined' && TABBED) return PANELS[currentTab] || [];
       return STOCKS || [];
     }
-    function render() {
-      const list = activeStocks();
+    function updateHeaderCounts(tab) {
+      const list = (typeof TABBED !== 'undefined' && TABBED)
+        ? (PANELS[tab] || [])
+        : (STOCKS || []);
       const buyN = list.filter(isBuy).length;
-      document.getElementById('count').textContent = String(list.length);
+      const countEl = document.getElementById('count');
+      if (countEl) countEl.textContent = String(list.length);
       const buyEl = document.getElementById('buy-count');
       if (buyEl) buyEl.textContent = String(buyN);
       const labelEl = document.getElementById('tab-label');
-      if (labelEl) labelEl.textContent = (TAB_LABEL && TAB_LABEL[currentTab]) || '';
+      if (labelEl) labelEl.textContent = (TAB_LABEL && TAB_LABEL[tab]) || '';
       if (typeof TABBED !== 'undefined' && TABBED) {
         const nl = document.getElementById('n-long');
         const ns = document.getElementById('n-short');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
       }
-      disposeCharts();
+    }
+    function ensureTabPanes() {
+      if (panesReady || typeof TABBED === 'undefined' || !TABBED) return;
       const nav = document.getElementById('nav');
       const main = document.getElementById('main');
-      nav.innerHTML = '';
-      main.innerHTML = '';
-      const prefix = (typeof TABBED !== 'undefined' && TABBED) ? (currentTab + '-') : '';
-      list.forEach((s, idx) => {
+      nav.innerHTML =
+        '<div id="nav-long" class="tab-pane"></div>' +
+        '<div id="nav-short" class="tab-pane" hidden></div>';
+      main.innerHTML =
+        '<div id="main-long" class="tab-pane"></div>' +
+        '<div id="main-short" class="tab-pane" hidden></div>';
+      panesReady = true;
+    }
+    function resizeTabCharts(tab) {
+      const prefix = tab + '-';
+      Object.keys(chartInstances).forEach(sid => {
+        if (!sid.startsWith(prefix)) return;
+        try { chartInstances[sid].resize(); } catch (e) {}
+      });
+    }
+    function showTab(tab) {
+      const prev = currentTab;
+      currentTab = tab;
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+      });
+      updateHeaderCounts(tab);
+      ['long', 'short'].forEach(t => {
+        const hide = t !== tab;
+        const n = document.getElementById('nav-' + t);
+        const m = document.getElementById('main-' + t);
+        if (n) n.hidden = hide;
+        if (m) {
+          m.hidden = hide;
+          m.classList.remove('tab-enter');
+          if (!hide) {
+            // 强制重启动效
+            void m.offsetWidth;
+            m.classList.add('tab-enter');
+          }
+        }
+      });
+      buildPanel(tab);
+      requestAnimationFrame(() => resizeTabCharts(tab));
+      void prev;
+    }
+    function buildPanel(tab) {
+      if (typeof TABBED !== 'undefined' && TABBED && panelBuilt[tab]) return;
+      const list = (typeof TABBED !== 'undefined' && TABBED)
+        ? (PANELS[tab] || [])
+        : (STOCKS || []);
+      const navRoot = (typeof TABBED !== 'undefined' && TABBED)
+        ? document.getElementById('nav-' + tab)
+        : document.getElementById('nav');
+      const mainRoot = (typeof TABBED !== 'undefined' && TABBED)
+        ? document.getElementById('main-' + tab)
+        : document.getElementById('main');
+      if (!navRoot || !mainRoot) return;
+      navRoot.innerHTML = '';
+      mainRoot.innerHTML = '';
+      const prefix = (typeof TABBED !== 'undefined' && TABBED) ? (tab + '-') : '';
+      list.forEach((s) => {
         const sid = prefix + s.code;
         const item = document.createElement('div');
         item.className = 'nav-item';
+
+        const rowMain = document.createElement('div');
+        rowMain.className = 'nav-row nav-row-main';
         const a = document.createElement('a');
         a.className = isBuy(s) ? 'anchor buy' : 'anchor';
         a.href = '#' + sid;
         a.textContent = s.code + ' ' + s.name;
-        item.appendChild(a);
+        rowMain.appendChild(a);
         if (s.industry) {
           const ind = document.createElement('span');
           ind.className = 'nav-industry';
           ind.textContent = s.industry;
           ind.title = s.industry;
-          item.appendChild(ind);
-        }
-        if (isBuy(s)) {
-          const tag = document.createElement('span');
-          tag.className = 'nav-buy';
-          tag.textContent = buyLabel(s);
-          item.appendChild(tag);
+          rowMain.appendChild(ind);
         }
         const xq = document.createElement('a');
         xq.className = 'xq-link';
@@ -477,8 +575,37 @@ function sma(arr, n) {
         xq.title = '在雪球打开 ' + s.code + ' ' + s.name;
         xq.setAttribute('aria-label', '雪球 ' + s.code);
         xq.innerHTML = XUEQIU_ICON_SVG;
-        item.appendChild(xq);
-        nav.appendChild(item);
+        rowMain.appendChild(xq);
+        item.appendChild(rowMain);
+
+        const rowTags = document.createElement('div');
+        rowTags.className = 'nav-row nav-row-tags';
+        let hasTag = false;
+        if (isBuy(s)) {
+          const tag = document.createElement('span');
+          tag.className = 'nav-buy';
+          tag.textContent = buyLabel(s);
+          rowTags.appendChild(tag);
+          hasTag = true;
+        } else if (isWatch(s)) {
+          const tag = document.createElement('span');
+          tag.className = 'nav-watch';
+          tag.textContent = watchLabel(s);
+          rowTags.appendChild(tag);
+          hasTag = true;
+        }
+        const strats = visibleStrategies(s);
+        for (let i = 0; i < strats.length; i++) {
+          const st = document.createElement('span');
+          st.className = navStrategyClass(strats[i].id);
+          st.textContent = strats[i].title;
+          st.title = strats[i].title;
+          rowTags.appendChild(st);
+          hasTag = true;
+        }
+        if (hasTag) item.appendChild(rowTags);
+
+        navRoot.appendChild(item);
         const section = document.createElement('section');
         section.className = 'card';
         section.id = sid;
@@ -491,15 +618,31 @@ function sma(arr, n) {
             ? '<div class="chart" id="chart-' + sid + '"></div>'
             : '<p class="chart-error">无K线数据</p>') +
           '</div>';
-        main.appendChild(section);
+        mainRoot.appendChild(section);
         if (s.bars && s.bars.length) {
           const el = document.getElementById('chart-' + sid);
           const chart = echarts.init(el, null, { renderer: 'canvas' });
-          chart.setOption(buildOption(s, currentTab));
+          chart.setOption(buildOption(s, tab));
           chartInstances[sid] = chart;
         }
       });
       charts = Object.values(chartInstances);
+      if (typeof TABBED !== 'undefined' && TABBED) panelBuilt[tab] = true;
+    }
+    function render() {
+      if (typeof TABBED !== 'undefined' && TABBED) {
+        ensureTabPanes();
+        updateHeaderCounts(currentTab);
+        const nl = document.getElementById('n-long');
+        const ns = document.getElementById('n-short');
+        if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
+        if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+        showTab(currentTab);
+        return;
+      }
+      disposeCharts();
+      updateHeaderCounts('long');
+      buildPanel('long');
     }
     function bindTabs() {
       if (typeof TABBED === 'undefined' || !TABBED) return;
@@ -507,9 +650,7 @@ function sma(arr, n) {
         btn.addEventListener('click', () => {
           const tab = btn.getAttribute('data-tab');
           if (!tab || tab === currentTab) return;
-          currentTab = tab;
-          document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
-          render();
+          showTab(tab);
           window.scrollTo({ top: 0, behavior: 'smooth' });
         });
       });

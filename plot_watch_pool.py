@@ -108,7 +108,20 @@ _UI_JS_PATH = ROOT / "plot_pool_ui.js"
 
 
 def _load_chart_js() -> str:
-    return _UI_JS_PATH.read_text(encoding="utf-8")
+    js = _UI_JS_PATH.read_text(encoding="utf-8")
+    mark = ROOT / "data" / "images" / "xueqiu_mark.png"
+    if mark.exists() and "__XUEQIU_DATA_URI__" in js:
+        import base64
+
+        uri = "data:image/png;base64," + base64.b64encode(mark.read_bytes()).decode("ascii")
+        js = js.replace("__XUEQIU_DATA_URI__", uri)
+    elif "__XUEQIU_DATA_URI__" in js:
+        # 回退：相对路径（signal_pool/日/ → ../../data/images/）
+        js = js.replace(
+            "__XUEQIU_DATA_URI__",
+            "../../data/images/xueqiu_mark.png",
+        )
+    return js
 
 
 _HTML_SHELL = """<!DOCTYPE html>
@@ -209,15 +222,33 @@ body {
 }
 .nav-item {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.nav-row {
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 5px 8px;
-  border-radius: 6px;
+  min-width: 0;
+}
+.nav-row-main {
+  width: 100%;
+}
+.nav-row-main .anchor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.nav-row-tags {
+  width: 100%;
+  padding-left: 0;
 }
 .nav-item:hover { background: #e8eef8; }
 .nav-item .sep { display: none; }
-nav a.anchor { color: #0b57d0; text-decoration: none; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+nav a.anchor { color: #0b57d0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 nav a.anchor:hover { text-decoration: underline; }
 nav a.anchor.buy { color: #c62828; font-weight: 700; }
 .nav-industry {
@@ -250,15 +281,29 @@ nav a.anchor.buy { color: #c62828; font-weight: 700; }
   border: 1px solid #ffc1bc;
   flex-shrink: 0;
 }
+.nav-watch {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.45;
+  background: #fff6e0;
+  color: #b36b00;
+  border: 1px solid #ffe0a3;
+  flex-shrink: 0;
+}
 a.xq-link {
   display: inline-flex;
   align-items: center;
   line-height: 0;
-  border-radius: 3px;
-  opacity: 0.92;
+  border-radius: 50%;
+  opacity: 0.95;
   flex-shrink: 0;
 }
-a.xq-link:hover { opacity: 1; outline: 1px solid rgba(255,36,54,0.35); }
+a.xq-link:hover { opacity: 1; outline: 1px solid rgba(11,87,208,0.35); }
+a.xq-link img,
 a.xq-link svg { width: 14px; height: 14px; display: block; }
 .content {
   flex: 1;
@@ -302,6 +347,11 @@ main {
   align-items: center;
   gap: 8px;
 }
+.badges-strategy {
+  flex: 1 1 100%;
+  width: 100%;
+  margin-top: 2px;
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -338,6 +388,44 @@ main {
   color: #3c4650;
   border-color: #d5dbe3;
 }
+.badge-strategy {
+  border: 1px solid transparent;
+}
+.badge-strategy-default {
+  background: #eef2f7;
+  color: #3c4650;
+  border-color: #d5dbe3;
+}
+.badge-strategy-strict {
+  background: #e8f1ff;
+  color: #0b57d0;
+  border-color: #b6d0fe;
+}
+.badge-strategy-r3 {
+  background: #f3eef8;
+  color: #6a1b9a;
+  border-color: #d7bff0;
+}
+.badge-strategy-scalp {
+  background: #e8faf4;
+  color: #0d7a5f;
+  border-color: #a8e6d5;
+}
+.nav-strategy {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+.nav-strategy-default { background: #eef2f7; color: #3c4650; border: 1px solid #d5dbe3; }
+.nav-strategy-strict { background: #e8f1ff; color: #0b57d0; border: 1px solid #b6d0fe; }
+.nav-strategy-r3 { background: #f3eef8; color: #6a1b9a; border: 1px solid #d7bff0; }
+.nav-strategy-scalp { background: #e8faf4; color: #0d7a5f; border: 1px solid #a8e6d5; }
+
 .cond-tip {
   color: var(--muted);
   font-size: 0.86rem;
@@ -456,6 +544,25 @@ main {
   border-color: #0b57d0;
   color: #0b57d0;
 }
+.tab-pane[hidden] {
+  display: none !important;
+}
+#main > .tab-pane.tab-enter {
+  animation: tabContentIn 0.32s ease both;
+}
+@keyframes tabContentIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #main > .tab-pane.tab-enter { animation: none; }
+}
 @media (max-width: 860px) {
   .app { flex-direction: column; }
   .sidebar {
@@ -502,7 +609,7 @@ def build_html(
     </div>"""
         sub = (
             f'<span id="tab-label">中长线</span> · 共 <span id="count">0</span> 只'
-            f'（可买 <span id="buy-count">0</span>）· 近 {days} 日前复权 · 按评分排序 · 左侧目录 · 红字+标签=可买/可短打'
+            f'（可买 <span id="buy-count">0</span>）· 近 {days} 日前复权 · 按评分排序 · 左侧目录 · 红字=买入 / 黄标=观察'
         )
     else:
         data_js = (

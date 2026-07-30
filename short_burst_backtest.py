@@ -19,11 +19,11 @@
 加速：
   - daily_cache 一次预载
   - 每股向量化预计算特征（避免 features_at 逐日 O(n²)）
-  - --targets 0.08,0.06 同一次扫信号、多套出场
+  - --targets 0.15,0.08 同一次扫信号、多套出场
 
 用法：
   .venv/bin/python short_burst_backtest.py
-  .venv/bin/python short_burst_backtest.py --bands data/short_burst_feature_bands_hw.json --targets 0.08,0.06
+  .venv/bin/python short_burst_backtest.py --bands data/short_burst_feature_bands_hw.json --targets 0.15,0.08
 """
 
 from __future__ import annotations
@@ -43,10 +43,11 @@ DAILY = ROOT / "data" / "daily_raw"
 BANDS = ROOT / "data" / "short_burst_feature_bands.json"
 
 LOOKBACK = 520
-HOLD_N = 5
-TARGET = 0.08
+HOLD_N = 8
+TARGET = 0.15
 STOP = 0.03
 COST_BPS = 15.0
+
 
 
 def load_bands(path: Path | None = None) -> dict:
@@ -180,7 +181,18 @@ def simulate_trade_arr(
     target: float,
     stop: float,
     cost: float,
+    *,
+    protect_at: float | None = None,
+    protect_floor: float = 0.0,
+    trail: float | None = None,
+    protect_delay: int = 0,
 ) -> dict | None:
+    """
+    protect_at: 浮盈达到该比例后启动保护（相对买入价）
+    protect_floor: 启动后止损抬到 entry*(1+floor)，0=保本
+    trail: 启动后按最高价回撤 trail 跟踪（价=peak_hi*(1-trail)）
+    protect_delay: 0=当日高点触及即抬止损；1=收盘确认后次日开盘才生效（更稳）
+    """
     buy_i = signal_i + 1
     if buy_i >= len(px):
         return None
@@ -203,22 +215,72 @@ def simulate_trade_arr(
     exit_px = None
     reason = None
     tp = entry * (1.0 + target)
-    sl = entry * (1.0 - stop)
+    hard_sl = entry * (1.0 - stop)
+    sl = hard_sl
+    peak_hi = entry
+    armed = False
+    pending_arm = False
+    floor_px = entry * (1.0 + float(protect_floor))
+    delay = int(protect_delay or 0)
 
     for j in range(buy_i, last + 1):
+        # 次日生效：昨日收盘确认后，今日开盘抬止损 / 更新跟踪
+        if delay >= 1 and pending_arm and not armed:
+            armed = True
+            pending_arm = False
+            if floor_px > sl:
+                sl = floor_px
+        if delay >= 1 and armed and trail is not None:
+            trail_px = peak_hi * (1.0 - float(trail))
+            if trail_px > sl:
+                sl = trail_px
+
         day_hi = float(hi[j])
         day_lo = float(lo[j])
+
+        if delay < 1:
+            # 当日抬止损：先用高点更新保护，再判断是否触及止损（偏乐观）
+            if np.isfinite(day_hi) and day_hi > peak_hi:
+                peak_hi = day_hi
+            peak_ret = peak_hi / entry - 1.0
+            if protect_at is not None and peak_ret >= float(protect_at):
+                armed = True
+                if floor_px > sl:
+                    sl = floor_px
+            if trail is not None and armed:
+                trail_px = peak_hi * (1.0 - float(trail))
+                if trail_px > sl:
+                    sl = trail_px
+
         hit_tp = day_hi >= tp
         hit_sl = day_lo <= sl
         if hit_tp and hit_sl:
-            exit_i, exit_px, reason = j, sl, "同日止损优先"
+            exit_i, exit_px = j, sl
+            reason = "同日止损优先"
             break
         if hit_sl:
-            exit_i, exit_px, reason = j, sl, "止损"
+            exit_i, exit_px = j, sl
+            if armed and sl > hard_sl + 1e-12:
+                reason = (
+                    "跟踪止损"
+                    if (trail is not None and sl > floor_px + 1e-12)
+                    else "保本止损"
+                )
+            else:
+                reason = "止损"
             break
         if hit_tp:
             exit_i, exit_px, reason = j, tp, "止盈"
             break
+
+        # 收盘后更新峰值；delay>=1 时仅挂起，次日再生效
+        if np.isfinite(day_hi) and day_hi > peak_hi:
+            peak_hi = day_hi
+        if protect_at is not None and (peak_hi / entry - 1.0) >= float(protect_at):
+            if delay >= 1:
+                pending_arm = True
+            else:
+                armed = True
 
     if exit_i is None:
         exit_i = last
@@ -247,6 +309,7 @@ def simulate_trade_arr(
         "buy_i": buy_i,
         "exit_i": exit_i,
         "target": target,
+        "armed": armed,
     }
 
 
@@ -547,7 +610,7 @@ def main() -> None:
         "--targets",
         type=str,
         default="",
-        help="逗号分隔多个止盈，如 0.08,0.06；默认仅 0.08",
+        help="逗号分隔多个止盈，如 0.15,0.08；默认读 bands.exit 或 +15%",
     )
     parser.add_argument("--stop", type=float, default=None)
     parser.add_argument("--cost-bps", type=float, default=None)
