@@ -4,14 +4,9 @@
 目录结构：
   signal_pool/
     YYYY-MM-DD/
-      meta.json
-      index.html          # Tab：中长线 / 短线；导航标注可买
-      long/
-        signals.csv
-        now.csv           # 仅可买入
-      short/
-        signals.csv
-        now.csv           # 仅可短打
+      meta.json / index.html / long/ / short/   # final（收盘后）
+      preview/
+        meta.json / index.html / long/ / short/ # 盘中 14:30 预览，不被 final 覆盖
 
 用法：
   .venv/bin/python run_daily_pool.py
@@ -556,18 +551,27 @@ def write_meta(day_dir: Path, asof: str, mode: str, long_stat: dict, short_stat:
         "mode": mode,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "pool_root": str(POOL_ROOT),
+        "day_dir": str(day_dir),
         "index_html": str(day_dir / "index.html"),
         "long": long_stat,
         "short": short_stat,
         "workflow": {
-            "preview": "收盘前用实时价预筛，供次日早盘参考",
-            "final": "收盘后强刷正式截面，覆盖同日目录",
-            "note": "preview 与 final 名单可能不一致，以 final 为准归档",
+            "preview": "收盘前预筛，写入 signal_pool/日期/preview/，不被 final 覆盖",
+            "final": "收盘后正式截面，写入 signal_pool/日期/（与 preview 并列）",
+            "note": "preview 与 final 名单可能不一致；对比时看同日 preview/ 与根目录",
         },
     }
     path = day_dir / "meta.json"
     path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"[4/4] meta → {path}")
+
+
+def pool_day_dir(asof: str, mode: str = "final") -> Path:
+    """final → signal_pool/日期/；preview → signal_pool/日期/preview/。"""
+    base = POOL_ROOT / asof
+    if mode == "preview":
+        return base / "preview"
+    return base
 
 
 def run_one_day(
@@ -581,7 +585,7 @@ def run_one_day(
     preload: bool = True,
 ) -> tuple[dict, dict]:
     """生成单日 signal_pool。返回 (long_stat, short_stat)。"""
-    day_dir = POOL_ROOT / asof
+    day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
 
@@ -618,6 +622,7 @@ def run_one_day(
         panels={"long": long_stocks, "short": short_stocks},
     )
     log(f"  合并图: long={len(long_stocks)} short={len(short_stocks)} → {out_html}")
+
     write_meta(day_dir, asof, mode, long_stat, short_stat)
     return long_stat, short_stat
 
@@ -755,7 +760,7 @@ def main() -> None:
         preload=True,
     )
     log(f"完成，耗时 {time.time() - t0:.0f}s")
-    log(f"打开: {POOL_ROOT / asof / 'index.html'}")
+    log(f"打开: {pool_day_dir(asof, mode) / 'index.html'}")
 
 
 if __name__ == "__main__":
