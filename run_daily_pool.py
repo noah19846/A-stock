@@ -60,17 +60,8 @@ def preload_daily(asof: str | None = None) -> None:
 
     t0 = time.time()
     n = daily_cache.preload(force=True)
-    log(f"[cache] 并行预载日线 {n} 只，耗时 {time.time() - t0:.1f}s")
-    # 同步到短线旧缓存别名，避免其它脚本再读盘
-    try:
-        import analyze_short_burst_features as asbf
-
-        asbf._DAILY_CACHE.clear()
-        for code in daily_cache.cached_codes():
-            asbf._DAILY_CACHE[code] = daily_cache.get(code)
-    except Exception:
-        pass
-    _ = asof  # 预载全量近端；筛选时再按 asof 切片
+    log(f"[cache] 并行预载日线 {n} 只（{daily_cache.source()}），耗时 {time.time() - t0:.1f}s")
+    _ = asof
 
 
 def resolve_asof() -> str:
@@ -86,7 +77,7 @@ def resolve_asof() -> str:
         return str(pd.to_datetime(df["日期"]).max().date())
 
 
-def run_update(force: bool = True) -> None:
+def run_update(force: bool = False) -> None:
     cmd = [PYTHON, str(ROOT / "update_daily.py")]
     if force:
         cmd.append("--force")
@@ -95,6 +86,29 @@ def run_update(force: bool = True) -> None:
         cmd.append("--sqlite")
     log(f"[1/4] 更新日线: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(ROOT), check=True)
+
+
+def db_already_current() -> bool:
+    """SQLite 最新日 == 最近交易日时视为已更新。"""
+    db = ROOT / "data" / "db" / "daily.db"
+    if not (db.exists() and db.stat().st_size > 0):
+        return False
+    try:
+        import daily_db
+
+        st = daily_db.stats()
+        mx = str(st.get("max_date") or "")[:10]
+        if not mx:
+            return False
+        try:
+            from update_daily import latest_trade_date
+
+            return mx == latest_trade_date()
+        except Exception:
+            # 无网：库日期不早于本地今天则视为可用
+            return mx >= datetime.now().strftime("%Y-%m-%d")
+    except Exception:
+        return False
 
 
 def stocks_from_df(
@@ -383,6 +397,8 @@ def run_short(
     strategy_ids: list[str] | None = None,
 ) -> tuple[dict, list[dict]]:
     """短线筛选。默认合并 daily_html 三套（default/strict/r3）；单策略时用 strategy_ids 或 bands_path。"""
+    import short_burst_screener as sbs
+
     out_dir = day_dir / "short"
     out_dir.mkdir(parents=True, exist_ok=True)
     old_html = out_dir / "index.html"
@@ -390,17 +406,49 @@ def run_short(
         old_html.unlink()
 
     t0 = time.time()
-    # 单 bands 路径 → 视为单策略 default 标签
+    # 解析策略列表
     if bands_path is not None and strategy_ids is None:
-        strategy_ids = ["default"]
-        frames = [_scan_one_short("default", asof, bands_path=bands_path)]
+        ids = ["default"]
         log("[3/4] 短线筛选（单 bands）…")
+        strategy_specs: list[tuple[str, dict, dict]] = []  # sid, meta, bands
+        band_cfg = sbs.load_bands(bands_path if bands_path.is_absolute() else ROOT / bands_path)
+        strategy_specs.append(
+            ("default", {"id": "default", "title": "默认", "bands": str(bands_path)}, band_cfg)
+        )
     else:
         ids = strategy_ids or daily_short_strategy_ids()
-        log(f"[3/4] 短线筛选（多策略: {', '.join(ids)}）…")
-        frames = []
+        log(f"[3/4] 短线筛选（多策略一次扫描: {', '.join(ids)}）…")
+        strategy_specs = []
         for sid in ids:
-            frames.append(_scan_one_short(sid, asof))
+            meta = strategy_by_id(sid)
+            bands = Path(meta["bands"])
+            if not bands.is_absolute():
+                bands = ROOT / bands
+            if not bands.exists():
+                log(f"  [{sid}] 缺少 {bands.name}，跳过")
+                continue
+            band_cfg = sbs.load_bands(bands)
+            log(
+                f"  [{sid}/{meta.get('title', sid)}] bands={bands.name} "
+                f"top_k={band_cfg.get('daily_top_k', 0)}"
+            )
+            strategy_specs.append((sid, meta, band_cfg))
+
+    scanned = sbs.scan_multi(
+        [(sid, bands) for sid, _, bands in strategy_specs],
+        asof=asof,
+        entry_only=False,
+    )
+    frames: list[tuple[dict, pd.DataFrame]] = []
+    for sid, meta, _bands in strategy_specs:
+        df = scanned.get(sid, pd.DataFrame())
+        if not df.empty:
+            out = df.copy()
+            out["strategy_id"] = sid
+            out["strategy_title"] = str(meta.get("title", sid))
+            frames.append((meta, out))
+        else:
+            frames.append((meta, df))
 
     # 每策略落盘
     per_stat: dict[str, dict] = {}
@@ -578,6 +626,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="日更 + 长/短线信号池 → signal_pool")
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--skip-update", action="store_true")
+    parser.add_argument(
+        "--force-update",
+        action="store_true",
+        help="强制重写当日日线（默认：库已是最新则跳过更新；否则增量 upsert）",
+    )
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--date", default="")
@@ -681,7 +734,12 @@ def main() -> None:
         return
 
     if not args.skip_update:
-        run_update(force=True)
+        if args.force_update:
+            run_update(force=True)
+        elif db_already_current():
+            log("[1/4] 日线已是最新，跳过更新（需要重拉加 --force-update）")
+        else:
+            run_update(force=False)
     else:
         log("[1/4] 跳过日线更新")
 

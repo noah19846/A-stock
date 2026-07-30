@@ -91,6 +91,19 @@ def evaluate(
     if feat is None:
         return Verdict(code, name, industry, asof_s, "不关注", False, 0.0, 0.0, "指标不足", [], {})
 
+    return verdict_from_feat(code, name, industry, asof_s, df, i, feat, bands)
+
+
+def verdict_from_feat(
+    code: str,
+    name: str,
+    industry: str,
+    asof_s: str,
+    df: pd.DataFrame,
+    i: int,
+    feat: dict,
+    bands: dict,
+) -> Verdict:
     soft, hard, reasons = score_row(feat, bands)
     min_score = float(bands.get("min_score", 0.72))
     min_hard = float(bands.get("min_hard", 0.75))
@@ -202,12 +215,24 @@ def scan(
     asof: str | None = None,
     bands: dict | None = None,
 ) -> pd.DataFrame:
-    import daily_cache
-
     if bands is None:
         bands = load_bands()
+    out = scan_multi([("default", bands)], asof=asof, entry_only=entry_only)
+    return out.get("default", pd.DataFrame())
+
+
+def scan_multi(
+    strategies: list[tuple[str, dict]],
+    asof: str | None = None,
+    entry_only: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """一次算特征，对多套 bands 分别打分。strategies=[(id, bands), ...]。"""
+    import daily_cache
+
+    if not strategies:
+        return {}
     name_map, ind_map = load_maps()
-    rows = []
+    rows_by: dict[str, list[dict]] = {sid: [] for sid, _ in strategies}
     codes = daily_cache.cached_codes()
     if not codes:
         codes = [
@@ -216,28 +241,45 @@ def scan(
             if p.name[0].isdigit()
             and p.stem.zfill(6).startswith(("600", "601", "603", "605", "000", "001", "002"))
         ]
+    prefixes = ("600", "601", "603", "605", "000", "001", "002")
     for code in codes:
-        if not code.startswith(("600", "601", "603", "605", "000", "001", "002")):
+        if not code.startswith(prefixes):
             continue
         if "ST" in name_map.get(code, "").upper():
             continue
-        v = evaluate(code, bands, name_map, ind_map, asof=asof)
-        if v.stage not in ("可短打", "观察"):
+        df = daily_cache.get(code, asof=asof)
+        if df is None:
             continue
-        if entry_only and not v.can_trade:
+        i = len(df) - 1
+        asof_s = str(df["日期"].iloc[i].date())
+        feat = features_at(df, i)
+        if feat is None:
             continue
-        rows.append(v.to_row())
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
+        name = name_map.get(code, "")
+        industry = ind_map.get(code, "")
+        for sid, bands in strategies:
+            v = verdict_from_feat(code, name, industry, asof_s, df, i, feat, bands)
+            if v.stage not in ("可短打", "观察"):
+                continue
+            if entry_only and not v.can_trade:
+                continue
+            rows_by[sid].append(v.to_row())
+
+    out: dict[str, pd.DataFrame] = {}
     order = {"可短打": 0, "观察": 1}
-    out["_o"] = out["stage"].map(order).fillna(9)
-    out = out.sort_values(["_o", "hard_score", "score"], ascending=[True, False, False]).drop(
-        columns=["_o"]
-    ).reset_index(drop=True)
-    out = apply_daily_top_k(out, bands)
-    if entry_only and not out.empty and "can_trade" in out.columns:
-        out = out[out["can_trade"] == True].reset_index(drop=True)  # noqa: E712
+    for sid, bands in strategies:
+        df = pd.DataFrame(rows_by[sid])
+        if df.empty:
+            out[sid] = df
+            continue
+        df["_o"] = df["stage"].map(order).fillna(9)
+        df = df.sort_values(
+            ["_o", "hard_score", "score"], ascending=[True, False, False]
+        ).drop(columns=["_o"]).reset_index(drop=True)
+        df = apply_daily_top_k(df, bands)
+        if entry_only and not df.empty and "can_trade" in df.columns:
+            df = df[df["can_trade"] == True].reset_index(drop=True)  # noqa: E712
+        out[sid] = df
     return out
 
 

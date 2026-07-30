@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS daily_bars (
 );
 CREATE INDEX IF NOT EXISTS idx_daily_bars_code_date
   ON daily_bars(code, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_bars_date
+  ON daily_bars(trade_date);
 """
 
 
@@ -201,6 +203,59 @@ def load_bars_df(
         return df
     df = df.rename(columns=COL_MAP_REV)
     return df[COLS_CN]
+
+
+def load_recent_bars_since(
+    cutoff: str,
+    *,
+    prefixes: tuple[str, ...] | None = None,
+    db_path: Path | None = None,
+) -> pd.DataFrame:
+    """按 trade_date >= cutoff 批量拉（需 idx_daily_bars_date）。英文列。"""
+    conn = connect(db_path)
+    try:
+        where = "trade_date >= ?"
+        params: list = [str(cutoff)[:10]]
+        if prefixes:
+            ors = " OR ".join(["code LIKE ?" for _ in prefixes])
+            where = f"({where}) AND ({ors})"
+            params.extend(f"{p}%" for p in prefixes)
+        sql = f"""
+          SELECT code, trade_date, open, high, low, close,
+                 volume, amount, float_shares, turnover, hfq_factor
+          FROM daily_bars
+          WHERE {where}
+          ORDER BY code, trade_date
+        """
+        return pd.read_sql_query(sql, conn, params=params)
+    finally:
+        conn.close()
+
+
+def recent_cutoff_date(
+    *,
+    limit: int = 320,
+    sample_code: str = "600000",
+    db_path: Path | None = None,
+) -> str | None:
+    """取样本股倒数第 limit 根的日期，作为近端批量截断。"""
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT trade_date FROM daily_bars
+            WHERE code=?
+            ORDER BY trade_date DESC
+            LIMIT 1 OFFSET ?
+            """,
+            (str(sample_code).zfill(6), int(limit) - 1),
+        ).fetchone()
+        if row:
+            return str(row[0])[:10]
+        mx = conn.execute("SELECT MIN(trade_date) FROM daily_bars").fetchone()[0]
+        return str(mx)[:10] if mx else None
+    finally:
+        conn.close()
 
 
 def list_codes(db_path: Path | None = None) -> list[str]:

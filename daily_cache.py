@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -110,26 +111,51 @@ def list_mainboard_codes_sqlite() -> list[str]:
 
 
 def _preload_sqlite() -> int:
-    """单连接批量读 SQLite（比几千次 open CSV 快）。"""
+    """按日期截断一次拉近端，再并行 prepare。"""
     import daily_db
 
-    codes = list_mainboard_codes_sqlite()
-    conn = daily_db.connect()
+    daily_db.init_db().close()
+
+    cutoff = daily_db.recent_cutoff_date(limit=MAX_BARS)
+    if not cutoff:
+        return 0
+    print(f"  sqlite since {cutoff} …", flush=True)
+    t0 = time.time()
+    bulk = daily_db.load_recent_bars_since(cutoff, prefixes=MAINBOARD_PREFIX)
+    n_codes = int(bulk["code"].nunique()) if not bulk.empty else 0
+    print(f"  sqlite bulk rows={len(bulk)} codes={n_codes}  {time.time() - t0:.1f}s", flush=True)
+    if bulk.empty:
+        return 0
+
+    rename = daily_db.COL_MAP_REV
+    jobs: list[tuple[str, pd.DataFrame]] = []
+    for code, g in bulk.groupby("code", sort=False):
+        code = str(code).zfill(6)
+        if len(g) > MAX_BARS:
+            g = g.iloc[-MAX_BARS:]
+        df = g.rename(columns=rename)
+        df["股票代码"] = code
+        jobs.append((code, df[daily_db.COLS_CN].reset_index(drop=True)))
+    del bulk
+
     loaded = 0
-    try:
-        for i, code in enumerate(codes, 1):
-            try:
-                df = daily_db.load_bars_df(code, limit=MAX_BARS, conn=conn)
-                prepared = _prepare(df) if not df.empty else None
-            except Exception:
-                prepared = None
+    cpu = os.cpu_count() or 4
+    n_workers = min(12, max(4, cpu))
+
+    def _one(item: tuple[str, pd.DataFrame]) -> tuple[str, pd.DataFrame | None]:
+        code, raw = item
+        try:
+            return code, _prepare(raw)
+        except Exception:
+            return code, None
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for i, (code, prepared) in enumerate(pool.map(_one, jobs, chunksize=8), 1):
             _CACHE[code] = prepared
             if prepared is not None:
                 loaded += 1
             if i % 500 == 0:
-                print(f"  sqlite preload {i}/{len(codes)}", flush=True)
-    finally:
-        conn.close()
+                print(f"  sqlite prepare {i}/{len(jobs)}", flush=True)
     return loaded
 
 
@@ -208,6 +234,10 @@ def get(code: str, asof: str | None = None) -> pd.DataFrame | None:
         return None
     if asof:
         cutoff = pd.Timestamp(asof)
+        last = df["日期"].iloc[-1]
+        # 已是最新（日常扫描）时跳过拷贝
+        if last <= cutoff:
+            return df
         out = df.loc[df["日期"] <= cutoff].reset_index(drop=True)
         if len(out) < 80:
             return None
