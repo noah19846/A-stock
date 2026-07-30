@@ -204,9 +204,13 @@ def run_long(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
     }, stocks
 
 
-def run_short(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
+def run_short(
+    day_dir: Path,
+    asof: str | None = None,
+    bands_path: Path | None = None,
+) -> tuple[dict, list[dict]]:
     log("[3/4] 短线筛选（short_burst）…")
-    bands = ROOT / "data" / "short_burst_feature_bands.json"
+    bands = bands_path or (ROOT / "data" / "short_burst_feature_bands.json")
     out_dir = day_dir / "short"
     out_dir.mkdir(parents=True, exist_ok=True)
     old_html = out_dir / "index.html"
@@ -214,7 +218,7 @@ def run_short(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
         old_html.unlink()
 
     if not bands.exists():
-        log("  缺少 short_burst_feature_bands.json，跳过短线")
+        log(f"  缺少 {bands.name}，跳过短线")
         pd.DataFrame().to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
         pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
         return {"rows": 0, "buy": 0, "watch": 0, "charts": 0, "skipped": True}, []
@@ -222,7 +226,9 @@ def run_short(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
     import short_burst_screener as sbs
 
     t0 = time.time()
-    df = sbs.scan(entry_only=False, asof=asof)
+    band_cfg = sbs.load_bands(bands)
+    log(f"  bands={bands.name} top_k={band_cfg.get('daily_top_k', 0)}")
+    df = sbs.scan(entry_only=False, asof=asof, bands=band_cfg)
     if not df.empty:
         now = df[df["stage"] == "可短打"].copy()
         df_out = df.copy()
@@ -240,7 +246,13 @@ def run_short(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
         f" → {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
         f"（筛选用时 {time.time() - t0:.1f}s）"
     )
-    return {"rows": len(df_out), "buy": n_buy, "watch": n_watch, "charts": len(stocks)}, stocks
+    return {
+        "rows": len(df_out),
+        "buy": n_buy,
+        "watch": n_watch,
+        "charts": len(stocks),
+        "bands": str(bands),
+    }, stocks
 
 
 def write_meta(day_dir: Path, asof: str, mode: str, long_stat: dict, short_stat: dict) -> None:
@@ -270,6 +282,11 @@ def main() -> None:
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--date", default="")
+    parser.add_argument(
+        "--short-bands",
+        default="",
+        help="短线 bands JSON，如 data/short_burst_feature_bands_top3.json",
+    )
     args = parser.parse_args()
 
     t0 = time.time()
@@ -299,13 +316,16 @@ def main() -> None:
 
     # 若 --date 指定历史日，筛选按该日收盘截面（截断日线），避免用到之后的数据
     asof_for_scan = args.date.strip() or None
+    short_bands = Path(args.short_bands) if args.short_bands.strip() else None
 
     if do_long:
         long_stat, long_stocks = run_long(day_dir, asof=asof_for_scan)
     else:
         log("[2/4] 跳过中长线")
     if do_short:
-        short_stat, short_stocks = run_short(day_dir, asof=asof_for_scan)
+        short_stat, short_stocks = run_short(
+            day_dir, asof=asof_for_scan, bands_path=short_bands
+        )
     else:
         log("[3/4] 跳过短线")
 

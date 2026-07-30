@@ -8,6 +8,7 @@
   .venv/bin/python short_burst_screener.py 601696
   .venv/bin/python short_burst_screener.py --scan
   .venv/bin/python short_burst_screener.py --scan --entry-only
+  .venv/bin/python short_burst_screener.py --scan --bands data/short_burst_feature_bands_top3.json
 """
 
 from __future__ import annotations
@@ -56,10 +57,11 @@ class Verdict:
         return d
 
 
-def load_bands() -> dict:
-    if not BANDS.exists():
-        raise SystemExit(f"缺少 {BANDS}，请先运行 analyze_short_burst_features.py")
-    return json.loads(BANDS.read_text(encoding="utf-8"))
+def load_bands(path: Path | None = None) -> dict:
+    p = path or BANDS
+    if not p.exists():
+        raise SystemExit(f"缺少 {p}，请先运行 analyze_short_burst_features.py 或指定 --bands")
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def evaluate(
@@ -92,6 +94,10 @@ def evaluate(
     soft, hard, reasons = score_row(feat, bands)
     min_score = float(bands.get("min_score", 0.72))
     min_hard = float(bands.get("min_hard", 0.75))
+    buy_hard = float(bands.get("signal_hard", 0.95))
+    buy_soft = float(bands.get("signal_soft", max(min_score, 0.80)))
+    watch_hard = float(bands.get("watch_hard", 0.85))
+    watch_soft = float(bands.get("watch_soft", max(min_hard, 0.75)))
 
     hot = feat["前5日涨幅%"] > 8 or feat["距20日高点%"] > -2 or feat.get("前1日涨幅%", 0) > 3
     bad_liq = feat["流通市值亿"] < 40 or feat["流通市值亿"] > 800 or feat["换手率%"] > 12
@@ -105,14 +111,18 @@ def evaluate(
         stage = "不关注"
         can = False
         when = "市值/换手不适合短线进出"
-    elif hard >= 0.95 and soft >= max(min_score, 0.80):
+    elif hard >= buy_hard and soft >= buy_soft:
         stage = "可短打"
         can = True
+        ex = bands.get("exit") or {}
+        tp = float(ex.get("target", 0.08)) * 100
+        sl = float(ex.get("stop", 0.03)) * 100
+        hold = int(ex.get("hold", 5))
         when = (
-            "硬条件+画像都过。计划：轻仓短打；目标约+8%减仓；"
-            "盘中相对成本回撤破约-3%离场；满5日未达目标评估离场。"
+            f"硬条件+画像都过。计划：轻仓短打；目标约+{tp:.0f}%减仓；"
+            f"盘中相对成本回撤破约-{sl:.0f}%离场；满{hold}日未达目标评估离场。"
         )
-    elif hard >= 0.85 and soft >= max(min_hard, 0.75):
+    elif hard >= watch_hard and soft >= watch_soft:
         # 观察必须硬条件与画像同时接近，禁止「只过一边」灌水
         stage = "观察"
         can = False
@@ -143,10 +153,59 @@ def evaluate(
     )
 
 
-def scan(entry_only: bool = False, asof: str | None = None) -> pd.DataFrame:
+def rank_score(hard: float, soft: float, bands: dict) -> float:
+    w = float(bands.get("rank_hard_weight", 1.2))
+    return float(hard) * w + float(soft)
+
+
+def apply_daily_top_k(df: pd.DataFrame, bands: dict) -> pd.DataFrame:
+    """可短打按日排名，仅保留 TopK 为可短打，其余降为观察。"""
+    k = int(bands.get("daily_top_k") or 0)
+    if k <= 0 or df.empty or "stage" not in df.columns:
+        return df
+    out = df.copy()
+    buy = out["stage"] == "可短打"
+    if buy.sum() == 0:
+        return out
+    hard = out["hard_score"] if "hard_score" in out.columns else out.get("hard", 0)
+    soft = out["score"] if "score" in out.columns else out.get("soft", 0)
+    out["_rank"] = [
+        rank_score(h, s, bands) for h, s in zip(hard.fillna(0), soft.fillna(0))
+    ]
+    # 单日截面（scan 本身就是 asof 一日）；若有 asof 列则按日
+    if "asof" in out.columns:
+        keep_idx = set()
+        for _, g in out[buy].groupby("asof", sort=False):
+            keep_idx.update(g.nlargest(k, "_rank").index.tolist())
+    else:
+        keep_idx = set(out.loc[buy].nlargest(k, "_rank").index.tolist())
+
+    demote = buy & ~out.index.isin(keep_idx)
+    if demote.any():
+        out.loc[demote, "stage"] = "观察"
+        out.loc[demote, "can_trade"] = False
+        out.loc[demote, "when"] = (
+            f"画像够格但当日未进 Top{k}（按硬分×{bands.get('rank_hard_weight', 1.2)}+画像分排序），不做首打"
+        )
+    out = out.drop(columns=["_rank"], errors="ignore")
+    order = {"可短打": 0, "观察": 1}
+    out["_o"] = out["stage"].map(order).fillna(9)
+    return (
+        out.sort_values(["_o", "hard_score", "score"], ascending=[True, False, False])
+        .drop(columns=["_o"])
+        .reset_index(drop=True)
+    )
+
+
+def scan(
+    entry_only: bool = False,
+    asof: str | None = None,
+    bands: dict | None = None,
+) -> pd.DataFrame:
     import daily_cache
 
-    bands = load_bands()
+    if bands is None:
+        bands = load_bands()
     name_map, ind_map = load_maps()
     rows = []
     codes = daily_cache.cached_codes()
@@ -173,9 +232,13 @@ def scan(entry_only: bool = False, asof: str | None = None) -> pd.DataFrame:
         return out
     order = {"可短打": 0, "观察": 1}
     out["_o"] = out["stage"].map(order).fillna(9)
-    return out.sort_values(["_o", "hard_score", "score"], ascending=[True, False, False]).drop(
+    out = out.sort_values(["_o", "hard_score", "score"], ascending=[True, False, False]).drop(
         columns=["_o"]
     ).reset_index(drop=True)
+    out = apply_daily_top_k(out, bands)
+    if entry_only and not out.empty and "can_trade" in out.columns:
+        out = out[out["can_trade"] == True].reset_index(drop=True)  # noqa: E712
+    return out
 
 
 def print_verdict(v: Verdict) -> None:
@@ -208,15 +271,22 @@ def main() -> None:
     parser.add_argument("code", nargs="?", help="股票代码")
     parser.add_argument("--scan", action="store_true")
     parser.add_argument("--entry-only", action="store_true")
+    parser.add_argument(
+        "--bands",
+        type=str,
+        default=str(BANDS),
+        help="特征区间 JSON（默认 data/short_burst_feature_bands.json）",
+    )
     args = parser.parse_args()
+    bands = load_bands(Path(args.bands))
 
     if args.code:
-        print_verdict(evaluate(args.code))
+        print_verdict(evaluate(args.code, bands=bands))
         return
 
     if args.scan:
-        print("扫描中…", flush=True)
-        df = scan(entry_only=args.entry_only)
+        print(f"扫描中… bands={args.bands}", flush=True)
+        df = scan(entry_only=args.entry_only, bands=bands)
         OUT_SCAN.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(OUT_SCAN, index=False, encoding="utf-8-sig")
         now = df[df["can_trade"] == True].copy() if "can_trade" in df.columns else df.iloc[0:0]  # noqa: E712

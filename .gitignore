@@ -35,9 +35,14 @@ data/daily_raw/
 
 # Daily signal pool HTML / CSV outputs
 signal_pool/
+signal_pool_top3/
+signal_pool_top2/
 
 # Regenerable board / stock reference dumps
 data/*.csv
+
+# Backtest / analysis text reports under data/
+data/*.txt
 
 # Analysis / scan / backtest outputs that scripts write under data/
 data/*_signals.csv
@@ -55,6 +60,9 @@ data/rally_buy_signals.csv
 
 # Keep curated short-burst bands (needed by short screener)
 !data/short_burst_feature_bands.json
+!data/short_burst_feature_bands_hw.json
+!data/short_burst_feature_bands_top3.json
+!data/short_burst_feature_bands_top2.json
 
 # Misc local junk
 *.log
