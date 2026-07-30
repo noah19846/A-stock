@@ -55,10 +55,24 @@ def load_qfq_bars(code: str, days: int = 365) -> tuple[list[dict], dict] | None:
     返回 (bars, spot)；spot 含 turnover_pct、amount_yi、volume_yi、float_yi
     （成交额按亿元，成交量/流通股本按亿股，均 4 位小数）。
     """
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
-        return None
-    df = pd.read_csv(path, dtype={"股票代码": str})
+    code = str(code).zfill(6)
+    df = None
+    db = ROOT / "data" / "db" / "daily.db"
+    if db.exists() and db.stat().st_size > 0:
+        try:
+            import daily_db
+
+            raw = daily_db.load_bars_df(code, limit=max(days + 5, 80))
+            if not raw.empty:
+                df = raw
+        except Exception:
+            df = None
+    if df is None:
+        path = DAILY_DIR / f"{code}.csv"
+        if not path.exists():
+            return None
+        df = pd.read_csv(path, dtype={"股票代码": str})
+
     df["日期"] = pd.to_datetime(df["日期"])
     df = df.sort_values("日期")
     latest = df.iloc[-1]

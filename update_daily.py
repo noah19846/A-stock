@@ -312,16 +312,36 @@ def refetch_full_and_patch(
     out_dir: Path,
     trade_date: str,
     spot_row: pd.Series | None,
+    *,
+    use_sqlite: bool = False,
 ) -> str:
     """全量重拉 + 补当日。返回状态说明。"""
     path = out_dir / f"{code}.csv"
     try:
         df = fetch_one(code)
         df.to_csv(path, index=False, encoding="utf-8-sig")
-        # 清理带日期旧名
+        if use_sqlite:
+            import daily_db
+
+            conn = daily_db.init_db()
+            daily_db.replace_code_df(conn, code, df)
+            conn.close()
         for old in out_dir.glob(f"{code}_*.csv"):
             old.unlink(missing_ok=True)
         status, d1, d2 = append_spot_bar(path, code, trade_date, spot_row, force=True)
+        if use_sqlite and status == "updated":
+            # 同步当日 bar 进库（append_spot_bar 已写 CSV）
+            import daily_db
+
+            conn = daily_db.init_db()
+            try:
+                df2 = pd.read_csv(path, dtype={"股票代码": str})
+                row = df2[df2["日期"].astype(str).str.slice(0, 10) == trade_date]
+                if not row.empty:
+                    daily_db.upsert_bars(conn, [daily_db.bar_dict_from_cn(row.iloc[0].to_dict())])
+                    conn.commit()
+            finally:
+                conn.close()
         return f"{status}; tail=({d1},{d2})"
     except Exception as e:
         return f"refetch_fail:{e}"
@@ -361,11 +381,153 @@ def update_all(
     return tails, fails
 
 
+def update_all_sqlite(
+    trade_date: str,
+    spot: pd.DataFrame,
+    force: bool,
+    *,
+    also_csv: bool = False,
+    out_dir: Path | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """SQLite 批量日更：单事务 upsert，避免逐文件重写 CSV。"""
+    import daily_db
+
+    out_dir = out_dir or OUT_DIR
+    conn = daily_db.init_db()
+    last_map = daily_db.last_two_by_code(conn)
+    spot_map = {r["代码"]: r for _, r in spot.iterrows()}
+
+    codes = sorted(last_map.keys())
+    if not codes:
+        codes = [code_from_path(p) for p in list_local_csvs(out_dir)]
+
+    tails: list[dict] = []
+    fails: list[dict] = []
+    upsert_rows: list[tuple] = []
+    n_skip = 0
+    n_upd = 0
+
+    for i, code in enumerate(codes, 1):
+        info = last_map.get(code) or {
+            "d1": "",
+            "d2": "",
+            "hfq_factor": None,
+            "float_shares": None,
+        }
+        d1, d2 = info["d1"], info["d2"]
+        if d2 == trade_date and not force:
+            tails.append(
+                {
+                    "股票代码": code,
+                    "last_second_date": d1,
+                    "last_date": d2,
+                    "status": "skipped",
+                }
+            )
+            n_skip += 1
+            continue
+
+        spot_row = spot_map.get(code)
+        if spot_row is None:
+            tails.append(
+                {
+                    "股票代码": code,
+                    "last_second_date": d1,
+                    "last_date": d2,
+                    "status": "fail:截面中无此代码",
+                }
+            )
+            fails.append({"股票代码": code, "原因": "fail:截面中无此代码"})
+            continue
+
+        prev_factor = info["hfq_factor"]
+        prev_share = info["float_shares"]
+        if prev_factor is None or prev_share is None:
+            path = out_dir / f"{code}.csv"
+            if path.exists():
+                try:
+                    df = pd.read_csv(path, dtype={"股票代码": str})
+                    prev_factor = float(df["后复权因子"].iloc[-1])
+                    prev_share = float(df["流通股本"].iloc[-1])
+                    ds = df["日期"].astype(str).tolist()
+                    d2 = ds[-1] if ds else d2
+                    d1 = ds[-2] if len(ds) > 1 else d1
+                except Exception:
+                    pass
+        if prev_factor is None or prev_share is None:
+            tails.append(
+                {
+                    "股票代码": code,
+                    "last_second_date": d1,
+                    "last_date": d2,
+                    "status": "fail:无历史后复权/股本",
+                }
+            )
+            fails.append({"股票代码": code, "原因": "fail:无历史后复权/股本"})
+            continue
+
+        bar = spot_to_bar(code, spot_row, trade_date, float(prev_factor), float(prev_share))
+        if bar is None:
+            tails.append(
+                {
+                    "股票代码": code,
+                    "last_second_date": d1,
+                    "last_date": d2,
+                    "status": "fail:截面无有效报价",
+                }
+            )
+            fails.append({"股票代码": code, "原因": "fail:截面无有效报价"})
+            continue
+
+        upsert_rows.append(daily_db.bar_dict_from_cn(bar))
+        new_d1 = d2 if d2 != trade_date else d1
+        tails.append(
+            {
+                "股票代码": code,
+                "last_second_date": new_d1,
+                "last_date": trade_date,
+                "status": "updated",
+            }
+        )
+        n_upd += 1
+
+        if also_csv:
+            path = out_dir / f"{code}.csv"
+            if path.exists():
+                append_spot_bar(path, code, trade_date, spot_row, force=force)
+
+        if i % 500 == 0:
+            log(f"  进度 {i}/{len(codes)}")
+
+    if upsert_rows:
+        daily_db.upsert_bars(conn, upsert_rows)
+        conn.commit()
+    conn.close()
+    log(f"  SQLite upsert {n_upd}  skipped {n_skip}  fail {len(fails)}")
+    return tails, fails
+
+
+def collect_tail_patterns_sqlite() -> dict[tuple[str, str], list[str]]:
+    import daily_db
+
+    conn = daily_db.connect()
+    try:
+        last_map = daily_db.last_two_by_code(conn)
+    finally:
+        conn.close()
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for code, info in last_map.items():
+        groups[(info["d1"], info["d2"])].append(code)
+    return dict(groups)
+
+
 def repair_minority(
     out_dir: Path,
     trade_date: str,
     spot: pd.DataFrame,
     groups: dict[tuple[str, str], list[str]],
+    *,
+    use_sqlite: bool = False,
 ) -> None:
     if len(groups) <= 1:
         log("尾部日期模式唯一，数据齐整。")
@@ -395,7 +557,9 @@ def repair_minority(
         if not is_main_board(code):
             log(f"[{i}/{len(minority)}] skip non-main {code}")
             continue
-        result = refetch_full_and_patch(code, out_dir, trade_date, spot_map.get(code))
+        result = refetch_full_and_patch(
+            code, out_dir, trade_date, spot_map.get(code), use_sqlite=use_sqlite
+        )
         log(f"[{i}/{len(minority)}] refetch {code} -> {result}")
         time.sleep(0.8)
 
@@ -407,7 +571,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="强制覆盖：即使 CSV 最后一行已是当日也重写",
+        help="强制覆盖：即使最后一行已是当日也重写",
     )
     parser.add_argument(
         "--allow-mismatch",
@@ -419,14 +583,36 @@ def main() -> None:
         action="store_true",
         help="发现少数派时只打印提醒，不自动重拉",
     )
+    parser.add_argument(
+        "--sqlite",
+        action="store_true",
+        help="写入 data/db/daily.db（批量 upsert，远快于重写 CSV）",
+    )
+    parser.add_argument(
+        "--also-csv",
+        action="store_true",
+        help="与 --sqlite 联用：同时写 CSV（较慢，双写）",
+    )
     args = parser.parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    use_sqlite = bool(args.sqlite)
+    if use_sqlite:
+        import daily_db
+
+        daily_db.init_db().close()
+        st = daily_db.stats()
+        if not st.get("codes"):
+            log("提示：SQLite 库为空，请先 .venv/bin/python daily_db.py migrate")
+
     t0 = time.time()
     latest = latest_trade_date()
     trade_date = normalize_date(args.date) if args.date else latest
-    log(f"目标日期={trade_date}  最近交易日={latest}  force={args.force}")
+    log(
+        f"目标日期={trade_date}  最近交易日={latest}  force={args.force}"
+        f"  sqlite={use_sqlite} also_csv={args.also_csv}"
+    )
 
     if trade_date != latest and not args.allow_mismatch:
         raise SystemExit(
@@ -441,8 +627,18 @@ def main() -> None:
     log(f"截面行数={len(spot)}  拉取耗时 {spot_sec:.1f}s")
 
     t_upd = time.time()
-    log("遍历本地 CSV（统一为 代码.csv）并补当日...")
-    tails, fails = update_all(out_dir, trade_date, spot, force=args.force)
+    if use_sqlite:
+        log("SQLite 批量补当日...")
+        tails, fails = update_all_sqlite(
+            trade_date,
+            spot,
+            force=args.force,
+            also_csv=args.also_csv,
+            out_dir=out_dir,
+        )
+    else:
+        log("遍历本地 CSV（统一为 代码.csv）并补当日...")
+        tails, fails = update_all(out_dir, trade_date, spot, force=args.force)
     upd_sec = time.time() - t_upd
 
     n_updated = sum(1 for r in tails if r["status"] == "updated")
@@ -473,9 +669,13 @@ def main() -> None:
     groups = dict(groups)
 
     if len(groups) > 1 and not args.no_repair:
-        repair_minority(out_dir, trade_date, spot, groups)
+        repair_minority(
+            out_dir, trade_date, spot, groups, use_sqlite=use_sqlite
+        )
         repair_sec = time.time() - t_repair
-        groups2 = collect_tail_patterns(out_dir)
+        groups2 = (
+            collect_tail_patterns_sqlite() if use_sqlite else collect_tail_patterns(out_dir)
+        )
         log("\n======== 修复后模式 ========")
         for (d1, d2), codes in sorted(groups2.items(), key=lambda x: -len(x[1])):
             log(f"  count={len(codes):4d}  {{last_second_date: '{d1}', last_date: '{d2}'}}")
@@ -515,12 +715,14 @@ def main() -> None:
             "skipped": n_skipped,
             "failed": n_failed,
             "patterns": n_patterns,
+            "sqlite": int(use_sqlite),
         },
     )
 
     log(
         f"\n完成：updated={n_updated} skipped={n_skipped} failed={n_failed} "
         f"patterns={n_patterns} 总耗时 {total_sec:.1f}s"
+        + (" [sqlite]" if use_sqlite else "")
     )
     log(f"报告：{report_path}")
     log(f"耗时记录：{timing_path}")

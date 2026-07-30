@@ -90,6 +90,9 @@ def run_update(force: bool = True) -> None:
     cmd = [PYTHON, str(ROOT / "update_daily.py")]
     if force:
         cmd.append("--force")
+    db = ROOT / "data" / "db" / "daily.db"
+    if db.exists() and db.stat().st_size > 0:
+        cmd.append("--sqlite")
     log(f"[1/4] 更新日线: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(ROOT), check=True)
 
@@ -456,11 +459,35 @@ def short_has_strict_or_r3_buy(short_stat: dict) -> bool:
 
 def list_trade_dates(end: str, start: str | None = None) -> list[str]:
     """从本地日线推断交易日列表（升序）。"""
-    sample = next((ROOT / "data" / "daily_raw").glob("600*.csv"), None)
-    if sample is None:
-        return []
-    df = pd.read_csv(sample, usecols=["日期"])
-    dates = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
+    dates = None
+    db = ROOT / "data" / "db" / "daily.db"
+    if db.exists() and db.stat().st_size > 0:
+        try:
+            import daily_db
+
+            conn = daily_db.connect()
+            try:
+                # 任取一只主板代码的日期序列
+                row = conn.execute(
+                    "SELECT code FROM daily_bars WHERE code LIKE '600%' LIMIT 1"
+                ).fetchone()
+                if row:
+                    ser = pd.read_sql_query(
+                        "SELECT trade_date FROM daily_bars WHERE code=? ORDER BY trade_date",
+                        conn,
+                        params=(row[0],),
+                    )["trade_date"]
+                    dates = pd.to_datetime(ser).dt.strftime("%Y-%m-%d")
+            finally:
+                conn.close()
+        except Exception:
+            dates = None
+    if dates is None:
+        sample = next((ROOT / "data" / "daily_raw").glob("600*.csv"), None)
+        if sample is None:
+            return []
+        df = pd.read_csv(sample, usecols=["日期"])
+        dates = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
     dates = dates[(dates <= end)]
     if start:
         dates = dates[dates >= start]

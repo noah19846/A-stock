@@ -32,6 +32,7 @@ Thumbs.db
 # ---- Market data & generated artifacts (do not commit) ----
 # Full OHLCV (GB-scale)
 data/daily_raw/
+data/db/
 
 # Daily signal pool HTML / CSV outputs
 signal_pool/
