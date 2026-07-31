@@ -34,6 +34,60 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def log_signal_table(df: pd.DataFrame, *, title: str = "") -> None:
+    """条数>0 时打印代码/名称/阶段/今日交易简况。"""
+    if df is None or df.empty:
+        return
+    out = df.copy()
+    if "code" in out.columns:
+        out["code"] = out["code"].astype(str).str.zfill(6)
+    cols_prefer = [
+        ("code", "代码"),
+        ("name", "名称"),
+        ("stage", "阶段"),
+        ("今日涨跌%", "涨跌%"),
+        ("收盘", "收盘"),
+        ("换手率%", "换手%"),
+        ("strategy_tags", "策略"),
+    ]
+    use: list[tuple[str, str]] = []
+    for c, label in cols_prefer:
+        if c in out.columns:
+            use.append((c, label))
+    if not use:
+        return
+    rows = []
+    for _, r in out.iterrows():
+        cells = []
+        for c, _ in use:
+            v = r.get(c, "")
+            if c == "今日涨跌%" and v == v and v != "":
+                try:
+                    cells.append(f"{float(v):+.2f}")
+                except Exception:
+                    cells.append(str(v))
+            elif c in ("收盘", "换手率%") and v == v and v != "":
+                try:
+                    cells.append(f"{float(v):.2f}")
+                except Exception:
+                    cells.append(str(v))
+            else:
+                cells.append("" if v != v or v is None else str(v))
+        rows.append(cells)
+    widths = [len(lab) for _, lab in use]
+    for cells in rows:
+        for i, cell in enumerate(cells):
+            widths[i] = max(widths[i], len(cell))
+    if title:
+        log(f"  --- {title} ---")
+    header = "  ".join(lab.ljust(widths[i]) for i, (_, lab) in enumerate(use))
+    log(f"  {header}")
+    log(f"  {'  '.join('-' * w for w in widths)}")
+    for cells in rows:
+        line = "  ".join(cells[i].ljust(widths[i]) for i in range(len(use)))
+        log(f"  {line}")
+
+
 def clear_feature_cache() -> None:
     try:
         import analyze_short_burst_features as asbf
@@ -273,6 +327,8 @@ def run_long(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
         + f"）→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
         f"（筛选用时 {time.time() - t0:.1f}s）"
     )
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="long 明细")
     return {
         "rows": len(df_out),
         "buy": n_buy,
@@ -498,6 +554,11 @@ def run_short(
         n_watch = int((df["stage"] == "观察").sum())
         per_stat[sid] = {"rows": len(df), "buy": n_buy, "watch": n_watch}
         log(f"    {sid}: 可短打 {n_buy} / 观察 {n_watch}")
+        if len(df) > 0:
+            title = f"short/{sid}"
+            if meta.get("title"):
+                title = f"short/{sid}({meta.get('title')})"
+            log_signal_table(df, title=title)
 
     df_out = _merge_short_frames(frames)
     if not df_out.empty:
@@ -515,6 +576,8 @@ def run_short(
         f" → {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
         f"（筛选用时 {time.time() - t0:.1f}s）"
     )
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="short 合并明细")
     return {
         "rows": len(df_out),
         "buy": n_buy,
