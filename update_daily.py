@@ -1,21 +1,24 @@
 """
-日更：拉东财全市场当日截面，补进 data/daily_raw/{代码}.csv（固定文件名）。
+日更：拉东财全市场当日截面，补进 data/daily_raw/{代码}.csv 或 data/db/daily.db。
 
 更新后汇总每支股票最后两天日期；正常应只有一种
-{last_date, last_second_date}。若出现多种模式，对少数派股票
-自动全量重拉（新浪）并再补当日截面。
+{last_date, last_second_date}。若出现多种模式，写入少数派标记文件，
+不自动重拉（避免卡住）；需要时再单独修复。
 
 用法：
-  .venv/bin/python update_daily.py              # 已有当日则跳过
-  .venv/bin/python update_daily.py --force      # 强制覆盖当日
-  .venv/bin/python update_daily.py --date 20260721
+  .venv/bin/python update_daily.py --sqlite --force
+  .venv/bin/python update_daily.py --list-minority
+  .venv/bin/python update_daily.py --repair-minority --sqlite
+  .venv/bin/python update_daily.py --repair-minority --sqlite --codes 002828,600439
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +28,7 @@ from fetch_daily import fetch_one, is_main_board
 
 ROOT = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "data" / "daily_raw"
+MINORITY_MARK = ROOT / "data" / "db" / "tail_minority.json"
 COLS = [
     "股票代码",
     "日期",
@@ -521,51 +525,196 @@ def collect_tail_patterns_sqlite() -> dict[tuple[str, str], list[str]]:
     return dict(groups)
 
 
-def repair_minority(
+def minority_mark_path(out_dir: Path | None = None) -> Path:
+    MINORITY_MARK.parent.mkdir(parents=True, exist_ok=True)
+    return MINORITY_MARK
+
+
+def write_minority_mark(
+    trade_date: str,
+    groups: dict[tuple[str, str], list[str]],
+    fails: list[dict],
+    *,
+    out_dir: Path | None = None,
+) -> Path | None:
+    """标记少数派 / 失败票，不自动修复。齐整时清除旧标记。"""
+    path = minority_mark_path(out_dir)
+    ranked = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
+    fail_codes = {
+        str(r.get("股票代码", "")).zfill(6)
+        for r in fails
+        if r.get("股票代码")
+    }
+
+    if len(ranked) <= 1 and not fail_codes:
+        if path.exists():
+            path.unlink(missing_ok=True)
+            log(f"尾部齐整，已清除标记：{path}")
+        return None
+
+    majority_key, majority_codes = ranked[0] if ranked else (("", ""), [])
+    minority_rows: list[dict] = []
+    for (d1, d2), codes in ranked[1:]:
+        for c in codes:
+            minority_rows.append(
+                {
+                    "code": str(c).zfill(6),
+                    "last_second_date": d1,
+                    "last_date": d2,
+                    "kind": "tail_pattern",
+                }
+            )
+    for r in fails:
+        code = str(r.get("股票代码", "")).zfill(6)
+        if not code or code == "000000":
+            continue
+        minority_rows.append(
+            {
+                "code": code,
+                "last_second_date": "",
+                "last_date": "",
+                "kind": "fail",
+                "reason": str(r.get("原因", "")),
+            }
+        )
+
+    # 去重：同 code 合并；保留尾部日期 + fail 原因
+    by_code: dict[str, dict] = {}
+    for row in minority_rows:
+        code = row["code"]
+        cur = by_code.get(code)
+        if cur is None:
+            by_code[code] = dict(row)
+            continue
+        if row.get("last_date"):
+            cur["last_second_date"] = row["last_second_date"]
+            cur["last_date"] = row["last_date"]
+        if row.get("kind") == "fail":
+            cur["kind"] = "fail"
+            if row.get("reason"):
+                cur["reason"] = row["reason"]
+        elif row.get("reason") and not cur.get("reason"):
+            cur["reason"] = row["reason"]
+
+    payload = {
+        "trade_date": trade_date,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "majority": {
+            "last_second_date": majority_key[0],
+            "last_date": majority_key[1],
+            "count": len(majority_codes),
+        },
+        "minority": sorted(by_code.values(), key=lambda x: x["code"]),
+        "hint": (
+            "日更不再自动重拉。修复："
+            ".venv/bin/python update_daily.py --repair-minority --sqlite"
+        ),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步一份到 daily_raw 便于肉眼翻
+    mirror = (out_dir or OUT_DIR) / "_tail_minority.json"
+    try:
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+    log(
+        f"\n少数派/失败共 {len(by_code)} 支，已标记 → {path}\n"
+        f"  修复: .venv/bin/python update_daily.py --repair-minority --sqlite"
+    )
+    if by_code:
+        log("  " + ", ".join(sorted(by_code)))
+    return path
+
+
+def read_minority_mark(out_dir: Path | None = None) -> dict:
+    path = minority_mark_path(out_dir)
+    if not path.exists():
+        alt = (out_dir or OUT_DIR) / "_tail_minority.json"
+        path = alt if alt.exists() else path
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def list_minority(out_dir: Path | None = None) -> None:
+    info = read_minority_mark(out_dir)
+    if not info:
+        log("无少数派标记（齐整或尚未日更）。")
+        return
+    maj = info.get("majority") or {}
+    log(
+        f"trade_date={info.get('trade_date')}  updated_at={info.get('updated_at')}\n"
+        f"majority count={maj.get('count')} "
+        f"{{last_second_date: '{maj.get('last_second_date')}', "
+        f"last_date: '{maj.get('last_date')}'}}"
+    )
+    rows = info.get("minority") or []
+    log(f"minority/fail n={len(rows)}")
+    for r in rows:
+        extra = f"  {r.get('reason')}" if r.get("reason") else ""
+        log(
+            f"  {r.get('code')}  kind={r.get('kind')}  "
+            f"tail=({r.get('last_second_date')},{r.get('last_date')}){extra}"
+        )
+
+
+def repair_minority_codes(
+    codes: list[str],
     out_dir: Path,
     trade_date: str,
-    spot: pd.DataFrame,
-    groups: dict[tuple[str, str], list[str]],
+    spot: pd.DataFrame | None = None,
     *,
     use_sqlite: bool = False,
 ) -> None:
-    if len(groups) <= 1:
-        log("尾部日期模式唯一，数据齐整。")
+    """对指定代码全量重拉并补当日（手动修复入口）。"""
+    codes = [str(c).zfill(6) for c in codes if str(c).strip()]
+    if not codes:
+        log("无待修复代码。")
         return
-
-    # 按数量排序：多数派保留，少数派重拉
-    ranked = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
-    log("\n======== 尾部日期模式分布 ========")
-    for (d1, d2), codes in ranked:
-        log(f"  count={len(codes):4d}  {{last_second_date: '{d1}', last_date: '{d2}'}}")
-
-    majority_key, majority_codes = ranked[0]
-    minority = []
-    for key, codes in ranked[1:]:
-        minority.extend(codes)
-
-    log(
-        f"\n多数派: {{last_second_date: '{majority_key[0]}', last_date: '{majority_key[1]}'}} "
-        f"共 {len(majority_codes)} 支"
-    )
-    log(f"少数派共 {len(minority)} 支，将全量重拉并补当日：")
-    log(", ".join(minority))
-
-    spot_map = {r["代码"]: r for _, r in spot.iterrows()}
-    for i, code in enumerate(minority, 1):
-        # 跳过非主板（理论上不应出现）
+    if spot is None:
+        log("拉取东财截面供补当日...")
+        spot = fetch_em_spot()
+    spot_map = {str(r["代码"]).zfill(6): r for _, r in spot.iterrows()}
+    log(f"开始修复 {len(codes)} 支：{', '.join(codes)}")
+    for i, code in enumerate(codes, 1):
         if not is_main_board(code):
-            log(f"[{i}/{len(minority)}] skip non-main {code}")
+            log(f"[{i}/{len(codes)}] skip non-main {code}")
             continue
         result = refetch_full_and_patch(
             code, out_dir, trade_date, spot_map.get(code), use_sqlite=use_sqlite
         )
-        log(f"[{i}/{len(minority)}] refetch {code} -> {result}")
-        time.sleep(0.8)
+        log(f"[{i}/{len(codes)}] refetch {code} -> {result}")
+        time.sleep(0.5)
+
+
+def repair_minority_from_mark(
+    out_dir: Path,
+    *,
+    use_sqlite: bool = False,
+    codes: list[str] | None = None,
+    trade_date: str = "",
+) -> None:
+    info = read_minority_mark(out_dir)
+    if codes:
+        todo = [str(c).zfill(6) for c in codes]
+    else:
+        todo = [str(r["code"]).zfill(6) for r in (info.get("minority") or [])]
+    if not todo:
+        log("标记为空且未指定 --codes，退出。")
+        return
+    td = trade_date or str(info.get("trade_date") or "") or latest_trade_date()
+    repair_minority_codes(todo, out_dir, td, use_sqlite=use_sqlite)
+    # 修完后根据当前尾部重写/清除标记
+    groups = collect_tail_patterns_sqlite() if use_sqlite else collect_tail_patterns(out_dir)
+    write_minority_mark(td, groups, [], out_dir=out_dir)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="东财截面日更 daily_raw（固定文件名）")
+    parser = argparse.ArgumentParser(description="东财截面日更 daily_raw / SQLite")
     parser.add_argument("--date", default="", help="交易日 YYYYMMDD / YYYY-MM-DD，默认最近交易日")
     parser.add_argument("--out-dir", default=str(OUT_DIR))
     parser.add_argument(
@@ -579,11 +728,6 @@ def main() -> None:
         help="允许指定日期与最近交易日不一致（慎用）",
     )
     parser.add_argument(
-        "--no-repair",
-        action="store_true",
-        help="发现少数派时只打印提醒，不自动重拉",
-    )
-    parser.add_argument(
         "--sqlite",
         action="store_true",
         help="写入 data/db/daily.db（批量 upsert，远快于重写 CSV）",
@@ -592,6 +736,21 @@ def main() -> None:
         "--also-csv",
         action="store_true",
         help="与 --sqlite 联用：同时写 CSV（较慢，双写）",
+    )
+    parser.add_argument(
+        "--list-minority",
+        action="store_true",
+        help="列出少数派/失败标记后退出",
+    )
+    parser.add_argument(
+        "--repair-minority",
+        action="store_true",
+        help="按标记（或 --codes）全量重拉修复，不跑全日更",
+    )
+    parser.add_argument(
+        "--codes",
+        default="",
+        help="配合 --repair-minority：逗号分隔代码，覆盖标记列表",
     )
     args = parser.parse_args()
     out_dir = Path(args.out_dir)
@@ -605,6 +764,18 @@ def main() -> None:
         st = daily_db.stats()
         if not st.get("codes"):
             log("提示：SQLite 库为空，请先 .venv/bin/python daily_db.py migrate")
+
+    if args.list_minority:
+        list_minority(out_dir)
+        return
+
+    if args.repair_minority:
+        codes = [c.strip() for c in args.codes.split(",") if c.strip()] or None
+        td = normalize_date(args.date) if args.date else ""
+        repair_minority_from_mark(
+            out_dir, use_sqlite=use_sqlite, codes=codes, trade_date=td
+        )
+        return
 
     t0 = time.time()
     latest = latest_trade_date()
@@ -661,44 +832,16 @@ def main() -> None:
     for (d1, d2), n in counter.most_common():
         log(f"  count={n:4d}  {{last_second_date: '{d1}', last_date: '{d2}'}}")
 
-    t_repair = time.time()
-    repair_sec = 0.0
     groups = defaultdict(list)
     for r in tails:
         groups[(r["last_second_date"], r["last_date"])].append(r["股票代码"])
     groups = dict(groups)
+    n_patterns = len(groups)
 
-    if len(groups) > 1 and not args.no_repair:
-        repair_minority(
-            out_dir, trade_date, spot, groups, use_sqlite=use_sqlite
-        )
-        repair_sec = time.time() - t_repair
-        groups2 = (
-            collect_tail_patterns_sqlite() if use_sqlite else collect_tail_patterns(out_dir)
-        )
-        log("\n======== 修复后模式 ========")
-        for (d1, d2), codes in sorted(groups2.items(), key=lambda x: -len(x[1])):
-            log(f"  count={len(codes):4d}  {{last_second_date: '{d1}', last_date: '{d2}'}}")
-        report2 = [
-            {"股票代码": c, "last_second_date": d1, "last_date": d2}
-            for (d1, d2), codes in groups2.items()
-            for c in codes
-        ]
-        pd.DataFrame(report2).sort_values("股票代码").to_csv(
-            report_path, index=False, encoding="utf-8-sig"
-        )
-        n_patterns = len(groups2)
-    elif len(groups) > 1:
-        ranked = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
-        minority = []
-        for key, codes in ranked[1:]:
-            minority.extend(codes)
-        log(f"\n少数派 {len(minority)} 支（未自动修复）：")
-        log(", ".join(minority))
-        n_patterns = len(groups)
-    else:
+    # 不再自动重拉；只打标记
+    write_minority_mark(trade_date, groups, fails, out_dir=out_dir)
+    if n_patterns <= 1 and not fails:
         log("尾部日期模式唯一，数据齐整。")
-        n_patterns = 1
 
     total_sec = time.time() - t0
     timing_path = record_timing(
@@ -709,7 +852,7 @@ def main() -> None:
             "force": args.force,
             "spot_sec": round(spot_sec, 2),
             "update_sec": round(upd_sec, 2),
-            "repair_sec": round(repair_sec, 2),
+            "repair_sec": 0.0,
             "total_sec": round(total_sec, 2),
             "updated": n_updated,
             "skipped": n_skipped,

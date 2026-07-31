@@ -5,20 +5,24 @@
 - 否则：多进程并行读 CSV
 - 一次性算好后复权/均线；只保留近 MAX_BARS 根
 - get(code, asof=...) 内存切片，不再读盘
+- 同日预载结果可落盘 data/db/preload_cache.pkl，二次启动秒级命中
 """
 
 from __future__ import annotations
 
 import os
+import pickle
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 DAILY = ROOT / "data" / "daily_raw"
 DB_PATH = ROOT / "data" / "db" / "daily.db"
+PRELOAD_CACHE = ROOT / "data" / "db" / "preload_cache.pkl"
 
 USECOLS = [
     "日期",
@@ -38,20 +42,35 @@ MAINBOARD_PREFIX = ("600", "601", "603", "605", "000", "001", "002")
 _CACHE: dict[str, pd.DataFrame | None] = {}
 _PRELOADED = False
 _SOURCE: str = ""  # "sqlite" | "csv" | ""
+_CACHE_KEY: str = ""
 
 
 def clear() -> None:
-    global _PRELOADED, _SOURCE
+    global _PRELOADED, _SOURCE, _CACHE_KEY
     _CACHE.clear()
     _PRELOADED = False
     _SOURCE = ""
+    _CACHE_KEY = ""
 
 
 def use_sqlite() -> bool:
     return DB_PATH.exists() and DB_PATH.stat().st_size > 0
 
 
+def _rolling_mean(x: np.ndarray, w: int) -> np.ndarray:
+    n = len(x)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n < w:
+        return out
+    c = np.cumsum(x, dtype=np.float64)
+    out[w - 1] = c[w - 1] / w
+    if n > w:
+        out[w:] = (c[w:] - c[:-w]) / w
+    return out
+
+
 def _prepare(df: pd.DataFrame) -> pd.DataFrame | None:
+    """中文列 DataFrame → 带 px/均线的缓存帧（CSV 路径）。"""
     df["日期"] = pd.to_datetime(df["日期"])
     df = df.sort_values("日期", kind="mergesort")
     if len(df) > MAX_BARS:
@@ -69,13 +88,159 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame | None:
     df["vol"] = df["成交量"].astype(float)
     df["turn"] = df["换手率"].astype(float) * 100.0
     df["mv"] = df["流通股本"].astype(float) * close / 1e8
-    px = df["px"]
-    df["ret"] = px.pct_change()
-    df["ma5"] = px.rolling(5).mean()
-    df["ma10"] = px.rolling(10).mean()
-    df["ma20"] = px.rolling(20).mean()
-    df["ma60"] = px.rolling(60).mean()
+    px = df["px"].to_numpy(dtype=np.float64, copy=False)
+    ret = np.empty(len(px), dtype=np.float64)
+    ret[0] = np.nan
+    ret[1:] = px[1:] / px[:-1] - 1.0
+    df["ret"] = ret
+    df["ma5"] = _rolling_mean(px, 5)
+    df["ma10"] = _rolling_mean(px, 10)
+    df["ma20"] = _rolling_mean(px, 20)
+    df["ma60"] = _rolling_mean(px, 60)
     return df
+
+
+def _prepare_en(g: pd.DataFrame) -> pd.DataFrame | None:
+    """英文列近端片段 → 缓存帧（SQLite 批量路径，少一次 rename）。"""
+    if len(g) > MAX_BARS:
+        g = g.iloc[-MAX_BARS:]
+    n = len(g)
+    if n < 80:
+        return None
+    trade_date = pd.to_datetime(g["trade_date"].to_numpy())
+    o = g["open"].to_numpy(dtype=np.float64, copy=False)
+    h = g["high"].to_numpy(dtype=np.float64, copy=False)
+    low = g["low"].to_numpy(dtype=np.float64, copy=False)
+    c = g["close"].to_numpy(dtype=np.float64, copy=False)
+    vol = g["volume"].to_numpy(dtype=np.float64, copy=False)
+    amt = g["amount"].to_numpy(dtype=np.float64, copy=False)
+    fs = g["float_shares"].to_numpy(dtype=np.float64, copy=False)
+    turn = g["turnover"].to_numpy(dtype=np.float64, copy=False)
+    f = g["hfq_factor"].to_numpy(dtype=np.float64, copy=False)
+    px = c * f
+    ret = np.empty(n, dtype=np.float64)
+    ret[0] = np.nan
+    ret[1:] = px[1:] / px[:-1] - 1.0
+    return pd.DataFrame(
+        {
+            "日期": trade_date,
+            "开盘": o,
+            "最高": h,
+            "最低": low,
+            "收盘": c,
+            "成交量": vol,
+            "成交额": amt,
+            "流通股本": fs,
+            "换手率": turn,
+            "后复权因子": f,
+            "px": px,
+            "op": o * f,
+            "hi": h * f,
+            "lo": low * f,
+            "amt": amt,
+            "vol": vol,
+            "turn": turn * 100.0,
+            "mv": fs * c / 1e8,
+            "ret": ret,
+            "ma5": _rolling_mean(px, 5),
+            "ma10": _rolling_mean(px, 10),
+            "ma20": _rolling_mean(px, 20),
+            "ma60": _rolling_mean(px, 60),
+        }
+    )
+
+
+def _disk_cache_key() -> str:
+    import daily_db
+
+    st = daily_db.stats()
+    mx = str(st.get("max_date") or "")
+    try:
+        mtime = int(DB_PATH.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    # mtime：同日 force 重写 bar 后必须失效
+    return f"{mx}|mtime={mtime}|bars={MAX_BARS}|v2"
+
+
+def _try_load_disk_cache(key: str) -> int | None:
+    if not PRELOAD_CACHE.exists():
+        return None
+    try:
+        t0 = time.time()
+        with PRELOAD_CACHE.open("rb") as f:
+            payload = pickle.load(f)
+        if not isinstance(payload, dict) or payload.get("key") != key:
+            return None
+        data = payload.get("data") or {}
+        if not data:
+            return None
+        _CACHE.clear()
+        _CACHE.update(data)
+        n = sum(1 for v in _CACHE.values() if v is not None)
+        print(f"  disk cache hit {n} codes  {time.time() - t0:.1f}s", flush=True)
+        return n
+    except Exception as e:
+        print(f"  disk cache skip: {e}", flush=True)
+        return None
+
+
+def _save_disk_cache(key: str) -> None:
+    try:
+        PRELOAD_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PRELOAD_CACHE.with_suffix(".pkl.tmp")
+        t0 = time.time()
+        with tmp.open("wb") as f:
+            pickle.dump({"key": key, "data": dict(_CACHE)}, f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(PRELOAD_CACHE)
+        mb = PRELOAD_CACHE.stat().st_size / 1e6
+        print(f"  disk cache saved {mb:.0f}MB  {time.time() - t0:.1f}s", flush=True)
+    except Exception as e:
+        print(f"  disk cache save fail: {e}", flush=True)
+
+
+def _preload_sqlite() -> int:
+    """无 ORDER BY 批量拉 + 单进程 numpy prepare；可命中磁盘缓存。"""
+    global _CACHE_KEY
+    import daily_db
+
+    daily_db.init_db().close()
+    key = _disk_cache_key()
+    hit = _try_load_disk_cache(key)
+    if hit is not None:
+        _CACHE_KEY = key
+        return hit
+
+    cutoff = daily_db.recent_cutoff_date(limit=MAX_BARS)
+    if not cutoff:
+        return 0
+    print(f"  sqlite since {cutoff} …", flush=True)
+    t0 = time.time()
+    bulk = daily_db.load_recent_bars_since(cutoff, prefixes=MAINBOARD_PREFIX, order=False)
+    if bulk.empty:
+        return 0
+    bulk = bulk.sort_values(["code", "trade_date"], kind="mergesort")
+    n_codes = int(bulk["code"].nunique())
+    print(f"  sqlite bulk rows={len(bulk)} codes={n_codes}  {time.time() - t0:.1f}s", flush=True)
+
+    loaded = 0
+    t1 = time.time()
+    for i, (code, g) in enumerate(bulk.groupby("code", sort=False), 1):
+        code = str(code).zfill(6)
+        try:
+            prepared = _prepare_en(g)
+        except Exception:
+            prepared = None
+        _CACHE[code] = prepared
+        if prepared is not None:
+            loaded += 1
+        if i % 1000 == 0:
+            print(f"  sqlite prepare {i}/{n_codes}", flush=True)
+    del bulk
+    print(f"  sqlite prepare done {loaded}  {time.time() - t1:.1f}s", flush=True)
+    _CACHE_KEY = key
+    _save_disk_cache(key)
+    return loaded
 
 
 def _load_one(path: str) -> tuple[str, pd.DataFrame | None]:
@@ -103,60 +268,7 @@ def list_mainboard_paths() -> list[Path]:
 def list_mainboard_codes_sqlite() -> list[str]:
     import daily_db
 
-    return [
-        c
-        for c in daily_db.list_codes()
-        if c.startswith(MAINBOARD_PREFIX)
-    ]
-
-
-def _preload_sqlite() -> int:
-    """按日期截断一次拉近端，再并行 prepare。"""
-    import daily_db
-
-    daily_db.init_db().close()
-
-    cutoff = daily_db.recent_cutoff_date(limit=MAX_BARS)
-    if not cutoff:
-        return 0
-    print(f"  sqlite since {cutoff} …", flush=True)
-    t0 = time.time()
-    bulk = daily_db.load_recent_bars_since(cutoff, prefixes=MAINBOARD_PREFIX)
-    n_codes = int(bulk["code"].nunique()) if not bulk.empty else 0
-    print(f"  sqlite bulk rows={len(bulk)} codes={n_codes}  {time.time() - t0:.1f}s", flush=True)
-    if bulk.empty:
-        return 0
-
-    rename = daily_db.COL_MAP_REV
-    jobs: list[tuple[str, pd.DataFrame]] = []
-    for code, g in bulk.groupby("code", sort=False):
-        code = str(code).zfill(6)
-        if len(g) > MAX_BARS:
-            g = g.iloc[-MAX_BARS:]
-        df = g.rename(columns=rename)
-        df["股票代码"] = code
-        jobs.append((code, df[daily_db.COLS_CN].reset_index(drop=True)))
-    del bulk
-
-    loaded = 0
-    cpu = os.cpu_count() or 4
-    n_workers = min(12, max(4, cpu))
-
-    def _one(item: tuple[str, pd.DataFrame]) -> tuple[str, pd.DataFrame | None]:
-        code, raw = item
-        try:
-            return code, _prepare(raw)
-        except Exception:
-            return code, None
-
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        for i, (code, prepared) in enumerate(pool.map(_one, jobs, chunksize=8), 1):
-            _CACHE[code] = prepared
-            if prepared is not None:
-                loaded += 1
-            if i % 500 == 0:
-                print(f"  sqlite prepare {i}/{len(jobs)}", flush=True)
-    return loaded
+    return [c for c in daily_db.list_codes() if c.startswith(MAINBOARD_PREFIX)]
 
 
 def _preload_csv(workers: int | None, prefer_process: bool) -> int:

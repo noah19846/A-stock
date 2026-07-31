@@ -210,8 +210,12 @@ def load_recent_bars_since(
     *,
     prefixes: tuple[str, ...] | None = None,
     db_path: Path | None = None,
+    order: bool = False,
 ) -> pd.DataFrame:
-    """按 trade_date >= cutoff 批量拉（需 idx_daily_bars_date）。英文列。"""
+    """按 trade_date >= cutoff 批量拉（需 idx_daily_bars_date）。英文列。
+
+    默认不 ORDER BY（~3–5s）；调用方按 code/日期排序即可。order=True 时库内排序更慢。
+    """
     conn = connect(db_path)
     try:
         where = "trade_date >= ?"
@@ -220,12 +224,13 @@ def load_recent_bars_since(
             ors = " OR ".join(["code LIKE ?" for _ in prefixes])
             where = f"({where}) AND ({ors})"
             params.extend(f"{p}%" for p in prefixes)
+        order_sql = " ORDER BY code, trade_date" if order else ""
         sql = f"""
           SELECT code, trade_date, open, high, low, close,
                  volume, amount, float_shares, turnover, hfq_factor
           FROM daily_bars
           WHERE {where}
-          ORDER BY code, trade_date
+          {order_sql}
         """
         return pd.read_sql_query(sql, conn, params=params)
     finally:
@@ -271,54 +276,31 @@ def last_two_by_code(conn: sqlite3.Connection) -> dict[str, dict]:
     """
     code -> {d1, d2, hfq_factor, float_shares}
     d2=最新日, d1=次新日；hfq/float 取自最新日。
-    """
-    sql = """
-      SELECT code, trade_date, hfq_factor, float_shares,
-             ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
-      FROM daily_bars
-    """
-    # 兼容无窗口函数的旧 SQLite：退化为两轮查询
-    try:
-        cur = conn.execute(
-            """
-            WITH ranked AS (
-              SELECT code, trade_date, hfq_factor, float_shares,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY code ORDER BY trade_date DESC
-                     ) AS rn
-              FROM daily_bars
-            )
-            SELECT code, trade_date, hfq_factor, float_shares, rn
-            FROM ranked WHERE rn <= 2
-            """
-        )
-        rows = cur.fetchall()
-    except sqlite3.OperationalError:
-        rows = []
-        for (code,) in conn.execute("SELECT DISTINCT code FROM daily_bars"):
-            sub = conn.execute(
-                """
-                SELECT trade_date, hfq_factor, float_shares
-                FROM daily_bars WHERE code=?
-                ORDER BY trade_date DESC LIMIT 2
-                """,
-                (code,),
-            ).fetchall()
-            for i, r in enumerate(sub, 1):
-                rows.append((code, r[0], r[1], r[2], i))
 
+    按码走 (code, trade_date) 索引 LIMIT 2，避免全表窗口扫描（~100s → ~1s）。
+    """
     out: dict[str, dict] = {}
-    for code, trade_date, hfq, shares, rn in rows:
-        code = str(code).zfill(6)
-        item = out.setdefault(
-            code, {"d1": "", "d2": "", "hfq_factor": None, "float_shares": None}
-        )
-        if int(rn) == 1:
-            item["d2"] = str(trade_date)[:10]
-            item["hfq_factor"] = float(hfq) if hfq is not None else None
-            item["float_shares"] = float(shares) if shares is not None else None
-        elif int(rn) == 2:
-            item["d1"] = str(trade_date)[:10]
+    codes = [
+        str(r[0]).zfill(6)
+        for r in conn.execute("SELECT DISTINCT code FROM daily_bars")
+    ]
+    sql = """
+      SELECT trade_date, hfq_factor, float_shares
+      FROM daily_bars
+      WHERE code=?
+      ORDER BY trade_date DESC
+      LIMIT 2
+    """
+    for code in codes:
+        rows = conn.execute(sql, (code,)).fetchall()
+        item = {"d1": "", "d2": "", "hfq_factor": None, "float_shares": None}
+        if rows:
+            item["d2"] = str(rows[0][0])[:10]
+            item["hfq_factor"] = float(rows[0][1]) if rows[0][1] is not None else None
+            item["float_shares"] = float(rows[0][2]) if rows[0][2] is not None else None
+        if len(rows) > 1:
+            item["d1"] = str(rows[1][0])[:10]
+        out[code] = item
     return out
 
 
