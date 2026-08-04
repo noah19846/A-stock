@@ -6,12 +6,18 @@
   .venv/bin/python trades_log.py open
   .venv/bin/python trades_log.py buy --code 603507 --shares 200 --fill 23.16 --cost 23.232 \\
       --strategy short/default --signal-date 2026-08-03
+  .venv/bin/python trades_log.py buy --code 600000 --shares 100 --fill 10 --strategy long/rally
   .venv/bin/python trades_log.py sell --id T20260803-001 --price 24.50 --reason 止盈
+
+默认离场（未显式传 --stop/--target/--hold 时）：
+  short/*  → 止损-3% / 止盈+15% / 最多8日
+  long|rally → 读 data/rally_exit.json（默认 -10% / +25% / 40日，并在 notes 记 D15峰值<8%清仓）
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +25,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 LEDGER = ROOT / "trades" / "live_trades.csv"
+RALLY_EXIT = ROOT / "data" / "rally_exit.json"
 
 COLS = [
     "trade_id",
@@ -139,6 +146,28 @@ def cmd_list(status: str = "") -> None:
     log(f"\n→ {LEDGER}")
 
 
+def _strategy_kind(strategy: str) -> str:
+    s = (strategy or "").lower()
+    if "short" in s:
+        return "short"
+    if "long" in s or "rally" in s:
+        return "long"
+    return ""
+
+
+def load_rally_exit() -> dict:
+    if RALLY_EXIT.exists():
+        return json.loads(RALLY_EXIT.read_text(encoding="utf-8"))
+    return {
+        "stop": 0.10,
+        "target": 0.25,
+        "hold_days_max": 40,
+        "early_check_day": 15,
+        "early_min_mfe": 0.08,
+        "desc": "硬止损-10%；止盈+25%；最多40日；D15峰值<8%清仓",
+    }
+
+
 def cmd_buy(args: argparse.Namespace) -> None:
     code = str(args.code).zfill(6)
     shares = int(args.shares)
@@ -150,11 +179,31 @@ def cmd_buy(args: argparse.Namespace) -> None:
     fees = round((cost - fill) * shares, 2)
     stop = args.stop
     target = args.target
-    if stop is None and args.strategy and "short" in args.strategy:
-        stop = round(cost * (1 - 0.03), 2)
-    if target is None and args.strategy and "short" in args.strategy:
-        target = round(cost * (1 + 0.15), 2)
-    hold = int(args.hold) if args.hold is not None else (8 if args.strategy and "short" in args.strategy else "")
+    hold = args.hold
+    notes = args.notes or ""
+    kind = _strategy_kind(args.strategy or "")
+
+    if kind == "short":
+        if stop is None:
+            stop = round(cost * (1 - 0.03), 2)
+        if target is None:
+            target = round(cost * (1 + 0.15), 2)
+        if hold is None:
+            hold = 8
+    elif kind == "long":
+        rex = load_rally_exit()
+        if stop is None:
+            stop = round(cost * (1 - float(rex.get("stop", 0.10))), 2)
+        if target is None:
+            target = round(cost * (1 + float(rex.get("target", 0.25))), 2)
+        if hold is None:
+            hold = int(rex.get("hold_days_max", 40))
+        early = (
+            f"D{int(rex.get('early_check_day', 15))}峰值<"
+            f"{float(rex.get('early_min_mfe', 0.08))*100:.0f}%清仓"
+        )
+        if early not in notes:
+            notes = f"{notes} | {early}".strip(" |") if notes else early
 
     row = {
         "trade_id": next_id(entry_date),
@@ -172,13 +221,13 @@ def cmd_buy(args: argparse.Namespace) -> None:
         "strategy": args.strategy or "",
         "stop_price": stop if stop is not None else "",
         "target_price": target if target is not None else "",
-        "hold_days_max": hold,
+        "hold_days_max": "" if hold is None else int(hold),
         "exit_date": "",
         "exit_price": "",
         "exit_reason": "",
         "pnl": "",
         "pnl_pct": "",
-        "notes": args.notes or "",
+        "notes": notes,
     }
     df = load()
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
@@ -186,6 +235,8 @@ def cmd_buy(args: argparse.Namespace) -> None:
     log(
         f"已记账 {row['trade_id']}  {code} {row['name']}  {shares}股  "
         f"成交 {fill} / 含费成本 {cost}  止损 {row['stop_price']}  止盈 {row['target_price']}"
+        f"  持有上限 {row['hold_days_max']}"
+        + (f"  notes={notes}" if notes else "")
     )
     log(f"→ {LEDGER}")
 

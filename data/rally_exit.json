@@ -1,0 +1,12 @@
+{
+  "id": "rally_early15_mfe8",
+  "title": "长线折中离场",
+  "stop": 0.10,
+  "target": 0.25,
+  "hold_days_max": 40,
+  "early_check_day": 15,
+  "early_min_mfe": 0.08,
+  "cost_bps": 15,
+  "desc": "硬止损-10%；止盈+25%；最多40个交易日；第15个交易日若峰值浮盈仍<8%则收盘清仓",
+  "note": "相对纯固定TP25/H40：胜率约+3.4pp、期望约-0.37pp、平均持有约19日"
+}

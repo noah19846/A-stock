@@ -62,6 +62,10 @@ data/short_burst_watch.csv
 data/short_burst_feature_compare.csv
 data/rally_buy_signals.csv
 
+# Rally exit backtest artifacts (keep only the curated rule file)
+data/rally_exit_*
+!data/rally_exit.json
+
 # Keep curated short-burst bands (needed by short screener)
 !data/short_burst_feature_bands.json
 !data/short_burst_feature_bands_hw.json

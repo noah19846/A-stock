@@ -8,6 +8,9 @@
   - 已偏强（错过舒适买点，只适合追高纪律外）
   - 持仓风控提示（若已买入）
 
+默认可买入离场纪律见 data/rally_exit.json：
+  硬止损-10% / 止盈+25% / 最多40日；第15日峰值浮盈仍<8%则收盘清仓。
+
 用法：
   .venv/bin/python rally_buy_screener.py 603608
   .venv/bin/python rally_buy_screener.py --scan
@@ -62,6 +65,53 @@ RISK = {
     "stop_below_ma20_days": 3,
     "too_hot_ret20": 35.0,
 }
+
+# ---------- 离场纪律（data/rally_exit.json；折中：D15峰值<8%清仓）----------
+EXIT_CFG_PATH = ROOT / "data" / "rally_exit.json"
+EXIT = {
+    "stop": 0.10,
+    "target": 0.25,
+    "hold_days_max": 40,
+    "early_check_day": 15,
+    "early_min_mfe": 0.08,
+    "desc": (
+        "硬止损-10%；止盈+25%；最多40个交易日；"
+        "第15个交易日若峰值浮盈仍<8%则收盘清仓"
+    ),
+}
+
+
+def load_exit_cfg(path: Path | None = None) -> dict:
+    p = path or EXIT_CFG_PATH
+    cfg = dict(EXIT)
+    if p.exists():
+        import json
+
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        for k in (
+            "stop",
+            "target",
+            "hold_days_max",
+            "early_check_day",
+            "early_min_mfe",
+            "desc",
+        ):
+            if k in raw:
+                cfg[k] = raw[k]
+    return cfg
+
+
+def exit_advice_text(cfg: dict | None = None) -> str:
+    c = cfg or load_exit_cfg()
+    if c.get("desc"):
+        return str(c["desc"])
+    return (
+        f"硬止损-{float(c['stop'])*100:.0f}%；"
+        f"止盈+{float(c['target'])*100:.0f}%；"
+        f"最多{int(c['hold_days_max'])}个交易日；"
+        f"第{int(c['early_check_day'])}个交易日若峰值浮盈仍"
+        f"<{float(c['early_min_mfe'])*100:.0f}%则收盘清仓"
+    )
 
 
 @dataclass
@@ -348,7 +398,7 @@ def evaluate(
         can_buy = True
         when = (
             "近几日曾满足涨前 Setup，今日 Entry 硬条件齐：站上MA20、均线转多、量能恢复且未过热。"
-            "建议：分批；无效跌破MA20且站不回去则减仓。"
+            f"建议：分批；离场：{exit_advice_text()}。"
         )
         reasons = ["【Setup 近几日曾满足】"] + r_setup + ["【Entry 硬条件已齐】"] + r_entry
     elif is_entry:
