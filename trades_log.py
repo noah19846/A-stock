@@ -1,0 +1,270 @@
+"""
+实盘交易台账（trades/live_trades.csv）
+
+用法：
+  .venv/bin/python trades_log.py list
+  .venv/bin/python trades_log.py open
+  .venv/bin/python trades_log.py buy --code 603507 --shares 200 --fill 23.16 --cost 23.232 \\
+      --strategy short/default --signal-date 2026-08-03
+  .venv/bin/python trades_log.py sell --id T20260803-001 --price 24.50 --reason 止盈
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent
+LEDGER = ROOT / "trades" / "live_trades.csv"
+
+COLS = [
+    "trade_id",
+    "status",
+    "code",
+    "name",
+    "side",
+    "shares",
+    "fill_price",
+    "cost_price",
+    "amount",
+    "fees",
+    "entry_date",
+    "signal_date",
+    "strategy",
+    "stop_price",
+    "target_price",
+    "hold_days_max",
+    "exit_date",
+    "exit_price",
+    "exit_reason",
+    "pnl",
+    "pnl_pct",
+    "notes",
+]
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def load() -> pd.DataFrame:
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    if not LEDGER.exists():
+        df = pd.DataFrame(columns=COLS)
+        df.to_csv(LEDGER, index=False, encoding="utf-8-sig")
+        return df
+    df = pd.read_csv(LEDGER, dtype={"code": str, "trade_id": str})
+    if "code" in df.columns:
+        df["code"] = df["code"].astype(str).str.zfill(6)
+    return df
+
+
+def save(df: pd.DataFrame) -> None:
+    out = df.copy()
+    for c in COLS:
+        if c not in out.columns:
+            out[c] = ""
+    out[COLS].to_csv(LEDGER, index=False, encoding="utf-8-sig")
+
+
+def name_of(code: str) -> str:
+    code = str(code).zfill(6)
+    path = ROOT / "data" / "stock_list.csv"
+    if path.exists():
+        try:
+            sl = pd.read_csv(path, dtype=str)
+            hit = sl[sl["股票代码"].astype(str).str.zfill(6) == code]
+            if not hit.empty:
+                return str(hit.iloc[0]["股票名称"])
+        except Exception:
+            pass
+    return ""
+
+
+def next_id(entry_date: str) -> str:
+    df = load()
+    day = entry_date.replace("-", "")
+    prefix = f"T{day}-"
+    n = 1
+    if not df.empty and "trade_id" in df.columns:
+        same = df["trade_id"].astype(str).str.startswith(prefix)
+        if same.any():
+            seqs = []
+            for tid in df.loc[same, "trade_id"]:
+                try:
+                    seqs.append(int(str(tid).split("-")[-1]))
+                except Exception:
+                    pass
+            if seqs:
+                n = max(seqs) + 1
+    return f"{prefix}{n:03d}"
+
+
+def cmd_list(status: str = "") -> None:
+    df = load()
+    if df.empty:
+        log("(空台账)")
+        return
+    if status:
+        df = df[df["status"] == status]
+    if df.empty:
+        log(f"(无 status={status})")
+        return
+    cols = [
+        c
+        for c in [
+            "trade_id",
+            "status",
+            "code",
+            "name",
+            "shares",
+            "fill_price",
+            "cost_price",
+            "entry_date",
+            "strategy",
+            "stop_price",
+            "target_price",
+            "exit_date",
+            "exit_price",
+            "pnl",
+            "pnl_pct",
+            "notes",
+        ]
+        if c in df.columns
+    ]
+    log(df[cols].to_string(index=False))
+    log(f"\n→ {LEDGER}")
+
+
+def cmd_buy(args: argparse.Namespace) -> None:
+    code = str(args.code).zfill(6)
+    shares = int(args.shares)
+    fill = float(args.fill)
+    cost = float(args.cost) if args.cost is not None else fill
+    entry_date = args.date or datetime.now().strftime("%Y-%m-%d")
+    signal_date = args.signal_date or entry_date
+    amount = round(cost * shares, 2)
+    fees = round((cost - fill) * shares, 2)
+    stop = args.stop
+    target = args.target
+    if stop is None and args.strategy and "short" in args.strategy:
+        stop = round(cost * (1 - 0.03), 2)
+    if target is None and args.strategy and "short" in args.strategy:
+        target = round(cost * (1 + 0.15), 2)
+    hold = int(args.hold) if args.hold is not None else (8 if args.strategy and "short" in args.strategy else "")
+
+    row = {
+        "trade_id": next_id(entry_date),
+        "status": "open",
+        "code": code,
+        "name": args.name or name_of(code),
+        "side": "buy",
+        "shares": shares,
+        "fill_price": fill,
+        "cost_price": cost,
+        "amount": amount,
+        "fees": fees,
+        "entry_date": entry_date,
+        "signal_date": signal_date,
+        "strategy": args.strategy or "",
+        "stop_price": stop if stop is not None else "",
+        "target_price": target if target is not None else "",
+        "hold_days_max": hold,
+        "exit_date": "",
+        "exit_price": "",
+        "exit_reason": "",
+        "pnl": "",
+        "pnl_pct": "",
+        "notes": args.notes or "",
+    }
+    df = load()
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    save(df)
+    log(
+        f"已记账 {row['trade_id']}  {code} {row['name']}  {shares}股  "
+        f"成交 {fill} / 含费成本 {cost}  止损 {row['stop_price']}  止盈 {row['target_price']}"
+    )
+    log(f"→ {LEDGER}")
+
+
+def cmd_sell(args: argparse.Namespace) -> None:
+    df = load()
+    tid = str(args.id)
+    hit = df.index[df["trade_id"].astype(str) == tid]
+    if len(hit) == 0:
+        raise SystemExit(f"找不到 trade_id={tid}")
+    i = int(hit[0])
+    if str(df.at[i, "status"]) != "open":
+        raise SystemExit(f"{tid} 状态不是 open：{df.at[i, 'status']}")
+    exit_price = float(args.price)
+    shares = int(df.at[i, "shares"])
+    cost = float(df.at[i, "cost_price"])
+    # 卖出暂按成交价估算；手续费可之后在 notes 补
+    proceeds = exit_price * shares
+    cost_amt = cost * shares
+    pnl = round(proceeds - cost_amt, 2)
+    pnl_pct = round((exit_price / cost - 1.0) * 100, 3)
+    exit_date = args.date or datetime.now().strftime("%Y-%m-%d")
+    df.at[i, "status"] = "closed"
+    df.at[i, "exit_date"] = exit_date
+    df.at[i, "exit_price"] = exit_price
+    df.at[i, "exit_reason"] = args.reason or ""
+    df.at[i, "pnl"] = pnl
+    df.at[i, "pnl_pct"] = pnl_pct
+    if args.notes:
+        prev = str(df.at[i, "notes"] or "")
+        df.at[i, "notes"] = (prev + " | " if prev else "") + args.notes
+    save(df)
+    log(
+        f"已平仓 {tid}  出场 {exit_price}  PnL {pnl:+.2f} ({pnl_pct:+.3f}%)  "
+        f"原因={args.reason or '-'}"
+    )
+    log(f"→ {LEDGER}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="实盘交易台账")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_l = sub.add_parser("list", help="列出记录")
+    p_l.add_argument("--status", default="", help="open / closed")
+
+    sub.add_parser("open", help="只看持仓中")
+
+    p_b = sub.add_parser("buy", help="记一笔买入")
+    p_b.add_argument("--code", required=True)
+    p_b.add_argument("--shares", type=int, required=True)
+    p_b.add_argument("--fill", type=float, required=True, help="成交价（不含费）")
+    p_b.add_argument("--cost", type=float, default=None, help="含费成本价，默认=成交价")
+    p_b.add_argument("--name", default="")
+    p_b.add_argument("--date", default="", help="买入日 YYYY-MM-DD")
+    p_b.add_argument("--signal-date", default="")
+    p_b.add_argument("--strategy", default="short/default")
+    p_b.add_argument("--stop", type=float, default=None)
+    p_b.add_argument("--target", type=float, default=None)
+    p_b.add_argument("--hold", type=int, default=None)
+    p_b.add_argument("--notes", default="")
+
+    p_s = sub.add_parser("sell", help="平仓")
+    p_s.add_argument("--id", required=True, help="trade_id")
+    p_s.add_argument("--price", type=float, required=True)
+    p_s.add_argument("--date", default="")
+    p_s.add_argument("--reason", default="")
+    p_s.add_argument("--notes", default="")
+
+    args = parser.parse_args()
+    if args.cmd == "list":
+        cmd_list(args.status)
+    elif args.cmd == "open":
+        cmd_list("open")
+    elif args.cmd == "buy":
+        cmd_buy(args)
+    elif args.cmd == "sell":
+        cmd_sell(args)
+
+
+if __name__ == "__main__":
+    main()

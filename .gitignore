@@ -39,6 +39,9 @@ signal_pool/
 signal_pool_top3/
 signal_pool_top2/
 
+# Local live trade ledger
+trades/
+
 # Regenerable board / stock reference dumps
 data/*.csv
 

@@ -369,20 +369,31 @@ def _scan_one_short(
     return meta, out
 
 
+def _strategy_strictness(sid: str) -> int:
+    """越大越严：r3 > strict/scalp > default。"""
+    return {"r3": 3, "strict": 2, "scalp": 2, "default": 1}.get(str(sid), 0)
+
+
 def _merge_short_frames(frames: list[tuple[dict, pd.DataFrame]]) -> pd.DataFrame:
     """按 code 合并多策略结果，附 strategy_ids / strategy_tags。
 
     标签规则：某策略对该股为「可短打」才打该策略标签；
     若某股仅出现在某策略的「观察」且未被其它策略可短打覆盖，则仍列出并打该策略标签。
+
+    排序：可短打优先，再按命中策略严格度（r3 > strict > default），再 hard/soft。
     """
     by_code: dict[str, dict] = {}
     stage_rank = {"可短打": 0, "观察": 1, "已偏强": 2, "不关注": 3}
+    # sid -> title，便于重排标签
+    title_by_sid: dict[str, str] = {}
 
     for meta, df in frames:
         if df is None or df.empty:
             continue
         sid = str(meta.get("id", ""))
         title = str(meta.get("title", sid))
+        if sid:
+            title_by_sid[sid] = title
         for _, row in df.iterrows():
             code = str(row["code"]).zfill(6)
             stage = str(row.get("stage", "") or "")
@@ -459,20 +470,31 @@ def _merge_short_frames(frames: list[tuple[dict, pd.DataFrame]]) -> pd.DataFrame
         item["stage"] = item.pop("_best_stage")
         item["when"] = " | ".join(item.pop("_whens"))
         item.pop("_has_buy_tag", None)
-        item["strategy_ids"] = "|".join(item["strategy_ids"])
-        item["strategy_tags"] = "|".join(item["strategy_tags"])
+        # 标签按严格度降序：Strict_r3 | Strict | 默认
+        ids = list(item["strategy_ids"])
+        ids_sorted = sorted(ids, key=_strategy_strictness, reverse=True)
+        item["strategy_ids"] = "|".join(ids_sorted)
+        item["strategy_tags"] = "|".join(
+            title_by_sid.get(s, s) for s in ids_sorted
+        )
+        item["_strict"] = max((_strategy_strictness(s) for s in ids_sorted), default=0)
         item["can_trade"] = item["stage"] == "可短打"
         rows.append(item)
 
     out = pd.DataFrame(rows)
     order = {"可短打": 0, "观察": 1}
     out["_o"] = out["stage"].map(order).fillna(9)
-    if "hard_score" in out.columns and "score" in out.columns:
-        out = out.sort_values(
-            ["_o", "hard_score", "score"], ascending=[True, False, False]
-        ).drop(columns=["_o"])
-    else:
-        out = out.sort_values(["_o"]).drop(columns=["_o"])
+    sort_cols = ["_o", "_strict"]
+    ascending = [True, False]
+    if "hard_score" in out.columns:
+        sort_cols.append("hard_score")
+        ascending.append(False)
+    if "score" in out.columns:
+        sort_cols.append("score")
+        ascending.append(False)
+    out = out.sort_values(sort_cols, ascending=ascending).drop(
+        columns=["_o", "_strict"]
+    )
     return out.reset_index(drop=True)
 
 
