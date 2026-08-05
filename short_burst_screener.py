@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from analyze_short_burst_features import (
+    FEATURE_COLS,
     features_at,
     load_maps,
     mv_bounds,
