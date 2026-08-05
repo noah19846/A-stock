@@ -1,0 +1,23 @@
+{
+  "pick": {
+    "rule_id": "fixed_sl10_tp25_h40",
+    "family": "fixed",
+    "label": "fixed_H40_SL10_TP25",
+    "n": 668,
+    "winrate": 49.4,
+    "mean_net": 3.909,
+    "median_net": -0.311,
+    "payoff": 2.034,
+    "avg_hold": 28.82,
+    "mae_p50": -6.766,
+    "reasons": {
+      "到期": 296,
+      "止损": 212,
+      "止盈": 160
+    },
+    "score": 0.0,
+    "desc": "硬止损 -10%；止盈 +25%；最多持有40个交易日",
+    "hold_ok": true
+  },
+  "note": "curated fixed_sl10_tp25_h40"
+}
