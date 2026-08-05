@@ -66,6 +66,11 @@ data/rally_buy_signals.csv
 data/rally_exit_*
 !data/rally_exit.json
 
+# Treasure-double exploration dumps (keep curated bands)
+data/treasure_double_*
+data/treasure_signals.csv
+!data/treasure_bands.json
+
 # Keep curated short-burst bands (needed by short screener)
 !data/short_burst_feature_bands.json
 !data/short_burst_feature_bands_hw.json

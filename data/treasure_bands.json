@@ -1,0 +1,28 @@
+{
+  "id": "treasure_double",
+  "title": "宝藏观察（阶段底翻倍）",
+  "horizon_days": [40, 65],
+  "min_peak_ret": 1.0,
+  "daily_top_k": 5,
+  "note": "v2 更严：贴40日低≤1.5%、压MA5、MA10未上MA20、更深回撤、市值28-100亿、安静日≤40%；每日最多Top5。仅技术面。",
+  "hard": {
+    "above_ma20": false,
+    "px_ma5": [0.95, 0.985],
+    "px_ma20": [0.91, 0.96],
+    "dist60_hi_pct": [-28, -14],
+    "dist120_hi_pct": [-38, -16],
+    "ret20_pct": [-14, -4],
+    "ret5_pct": [-10, -2.5],
+    "vol40_pct": [1.9, 3.5],
+    "quiet40_pct_hi": 40,
+    "amt_ratio_5_20": [0.6, 1.0],
+    "mv_yi": [28, 100],
+    "turnover_pct": [0.8, 3.5],
+    "near_low40_pct_hi": 1.5,
+    "ma10_gt_ma20": false
+  },
+  "contrast": {
+    "vs_short": "短线要贴20日高、浅回撤；宝藏要深跌阶段底、远离新高",
+    "vs_long": "长线等站上MA20才买；宝藏启动时必须仍在MA20下方且压着MA5"
+  }
+}

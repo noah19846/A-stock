@@ -440,7 +440,7 @@ function sma(arr, n) {
     }
     function isWatch(s) {
       const a = s.advice || '';
-      return a.indexOf('观察埋伏') >= 0 || a === '观察';
+      return a.indexOf('观察埋伏') >= 0 || a.indexOf('宝藏观察') >= 0 || a === '观察';
     }
     function buyLabel(s) {
       const a = s.advice || '';
@@ -449,10 +449,12 @@ function sma(arr, n) {
       return '买入';
     }
     function watchLabel(s) {
+      const a = s.advice || '';
+      if (a.indexOf('宝藏') >= 0) return '宝藏';
       return '观察';
     }
     const chartInstances = {};
-    const panelBuilt = { long: false, short: false };
+    const panelBuilt = { long: false, short: false, treasure: false };
     let panesReady = false;
 
     function disposeCharts() {
@@ -483,8 +485,10 @@ function sma(arr, n) {
       if (labelEl) labelEl.textContent = (TAB_LABEL && TAB_LABEL[tab]) || '';
       if (typeof TABBED !== 'undefined' && TABBED) {
         const nl = document.getElementById('n-long');
+        const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
+        if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
       }
     }
@@ -494,10 +498,12 @@ function sma(arr, n) {
       const main = document.getElementById('main');
       nav.innerHTML =
         '<div id="nav-long" class="tab-pane"></div>' +
-        '<div id="nav-short" class="tab-pane" hidden></div>';
+        '<div id="nav-short" class="tab-pane" hidden></div>' +
+        '<div id="nav-treasure" class="tab-pane" hidden></div>';
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
-        '<div id="main-short" class="tab-pane" hidden></div>';
+        '<div id="main-short" class="tab-pane" hidden></div>' +
+        '<div id="main-treasure" class="tab-pane" hidden></div>';
       panesReady = true;
     }
     function resizeTabCharts(tab) {
@@ -514,7 +520,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short'].forEach(t => {
+      ['long', 'short', 'treasure'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);
@@ -634,8 +640,10 @@ function sma(arr, n) {
         ensureTabPanes();
         updateHeaderCounts(currentTab);
         const nl = document.getElementById('n-long');
+        const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
+        if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
         showTab(currentTab);
         return;

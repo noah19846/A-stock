@@ -1,16 +1,17 @@
 """
-一键日更：更新 K 线 → 中长线埋伏/买入 → 短线可操作 → 写入 signal_pool
+一键日更：更新 K 线 → 中长线 → 宝藏观察 → 短线 → 写入 signal_pool
 
 目录结构：
   signal_pool/
     YYYY-MM-DD/
-      meta.json / index.html / long/ / short/   # final（收盘后）
+      meta.json / index.html / long/ / treasure/ / short/   # final
       preview/
-        meta.json / index.html / long/ / short/ # 盘中 14:30 预览，不被 final 覆盖
+        meta.json / index.html / long/ / treasure/ / short/
 
 用法：
   .venv/bin/python run_daily_pool.py
   .venv/bin/python run_daily_pool.py --preview
+  .venv/bin/python run_daily_pool.py --treasure-only
   .venv/bin/python run_daily_pool.py --skip-update
 """
 
@@ -231,10 +232,9 @@ def stocks_from_df(
         when_tip = when_raw
         if advice in ("可买入", "可短打") and "建议：" in when_raw:
             when_tip = when_raw.split("建议：", 1)[1].strip()
-        elif advice in ("观察埋伏", "观察") and "等待买入触发：" in when_raw:
+        elif advice in ("观察埋伏", "观察", "宝藏观察") and "等待买入触发：" in when_raw:
             when_tip = when_raw.split("等待买入触发：", 1)[1].strip()
-        elif advice in ("观察埋伏", "观察") and "等待" in when_raw:
-            # 短线等其它表述：尽量保留后半段
+        elif advice in ("观察埋伏", "观察", "宝藏观察") and ("等待" in when_raw or "观察" in when_raw):
             when_tip = when_raw
         item: dict = {
             "code": code,
@@ -293,6 +293,37 @@ def strategy_by_id(sid: str) -> dict:
     if sid not in by_id:
         raise SystemExit(f"未知短线策略 id: {sid}")
     return by_id[sid]
+
+
+def run_treasure(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
+    log("[2b/4] 宝藏观察池（treasure）…")
+    import treasure_screener as tbs
+
+    t0 = time.time()
+    df = tbs.scan(asof=asof)
+
+    out_dir = day_dir / "treasure"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not df.empty:
+        df_out = df.copy()
+    else:
+        df_out = df
+    df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
+    stocks = stocks_from_df(df_out, asof=asof)
+    n_watch = int((df_out["stage"] == "宝藏观察").sum()) if not df_out.empty else 0
+    log(
+        f"  treasure: 共 {len(df_out)} 条（宝藏观察 {n_watch}）"
+        f"→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
+        f"（筛选用时 {time.time() - t0:.1f}s）"
+    )
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="treasure 明细")
+    return {
+        "rows": len(df_out),
+        "watch": n_watch,
+        "buy": 0,
+        "charts": len(stocks),
+    }, stocks
 
 
 def run_long(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
@@ -665,7 +696,14 @@ def prev_trade_dates_before(before: str, n: int = 120) -> list[str]:
     return earlier[:n]
 
 
-def write_meta(day_dir: Path, asof: str, mode: str, long_stat: dict, short_stat: dict) -> None:
+def write_meta(
+    day_dir: Path,
+    asof: str,
+    mode: str,
+    long_stat: dict,
+    short_stat: dict,
+    treasure_stat: dict | None = None,
+) -> None:
     meta = {
         "date": asof,
         "mode": mode,
@@ -675,6 +713,7 @@ def write_meta(day_dir: Path, asof: str, mode: str, long_stat: dict, short_stat:
         "index_html": str(day_dir / "index.html"),
         "long": long_stat,
         "short": short_stat,
+        "treasure": treasure_stat or {},
         "workflow": {
             "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/",
             "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更",
@@ -700,11 +739,12 @@ def run_one_day(
     mode: str = "final",
     do_long: bool = True,
     do_short: bool = True,
+    do_treasure: bool = True,
     short_bands: Path | None = None,
     short_strategy_ids: list[str] | None = None,
     preload: bool = True,
-) -> tuple[dict, dict]:
-    """生成单日 signal_pool。返回 (long_stat, short_stat)。"""
+) -> tuple[dict, dict, dict]:
+    """生成单日 signal_pool。返回 (long_stat, short_stat, treasure_stat)。"""
     day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
@@ -714,13 +754,19 @@ def run_one_day(
 
     long_stat: dict = {}
     short_stat: dict = {}
+    treasure_stat: dict = {}
     long_stocks: list[dict] = []
     short_stocks: list[dict] = []
+    treasure_stocks: list[dict] = []
 
     if do_long:
         long_stat, long_stocks = run_long(day_dir, asof=asof)
     else:
         log("[2/4] 跳过中长线")
+    if do_treasure:
+        treasure_stat, treasure_stocks = run_treasure(day_dir, asof=asof)
+    else:
+        log("[2b/4] 跳过宝藏观察")
     if do_short:
         short_stat, short_stocks = run_short(
             day_dir,
@@ -739,12 +785,19 @@ def run_one_day(
         [],
         out_html,
         days=180,
-        panels={"long": long_stocks, "short": short_stocks},
+        panels={
+            "long": long_stocks,
+            "short": short_stocks,
+            "treasure": treasure_stocks,
+        },
     )
-    log(f"  合并图: long={len(long_stocks)} short={len(short_stocks)} → {out_html}")
+    log(
+        f"  合并图: long={len(long_stocks)} treasure={len(treasure_stocks)} "
+        f"short={len(short_stocks)} → {out_html}"
+    )
 
-    write_meta(day_dir, asof, mode, long_stat, short_stat)
-    return long_stat, short_stat
+    write_meta(day_dir, asof, mode, long_stat, short_stat, treasure_stat)
+    return long_stat, short_stat, treasure_stat
 
 
 def main() -> None:
@@ -758,6 +811,8 @@ def main() -> None:
     )
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
+    parser.add_argument("--treasure-only", action="store_true")
+    parser.add_argument("--skip-treasure", action="store_true", help="不跑宝藏观察池")
     parser.add_argument("--date", default="")
     parser.add_argument(
         "--from-date",
@@ -790,8 +845,17 @@ def main() -> None:
     t0 = time.time()
     mode = "preview" if args.preview else "final"
 
-    do_long = not args.short_only
-    do_short = not args.long_only
+    do_long = True
+    do_short = True
+    do_treasure = not args.skip_treasure
+    if args.treasure_only:
+        do_long = False
+        do_short = False
+        do_treasure = True
+    elif args.long_only:
+        do_short = False
+    elif args.short_only:
+        do_long = False
 
     short_bands = Path(args.short_bands) if args.short_bands.strip() else None
     short_ids: list[str] | None = None
@@ -822,11 +886,12 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat = run_one_day(
+            _, short_stat, _ = run_one_day(
                 d,
                 mode=mode,
                 do_long=do_long,
                 do_short=do_short,
+                do_treasure=do_treasure,
                 short_bands=short_bands,
                 short_strategy_ids=short_ids,
                 preload=False,
@@ -839,11 +904,12 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat = run_one_day(
+                _, short_stat, _ = run_one_day(
                     d,
                     mode=mode,
                     do_long=do_long,
                     do_short=do_short,
+                    do_treasure=do_treasure,
                     short_bands=short_bands,
                     short_strategy_ids=short_ids,
                     preload=False,
@@ -882,6 +948,7 @@ def main() -> None:
         mode=mode,
         do_long=do_long,
         do_short=do_short,
+        do_treasure=do_treasure,
         short_bands=short_bands,
         short_strategy_ids=short_ids,
         preload=True,
