@@ -22,10 +22,9 @@ import numpy as np
 import pandas as pd
 
 from analyze_short_burst_features import (
-    FEATURE_COLS,
     features_at,
-    load_daily,
     load_maps,
+    mv_bounds,
     score_row,
 )
 
@@ -113,7 +112,12 @@ def verdict_from_feat(
     watch_soft = float(bands.get("watch_soft", max(min_hard, 0.75)))
 
     hot = feat["前5日涨幅%"] > 8 or feat["距20日高点%"] > -2 or feat.get("前1日涨幅%", 0) > 3
-    bad_liq = feat["流通市值亿"] < 40 or feat["流通市值亿"] > 800 or feat["换手率%"] > 12
+    mv_lo, mv_hi = mv_bounds(bands)
+    bad_liq = (
+        feat["流通市值亿"] < mv_lo
+        or feat["流通市值亿"] > mv_hi
+        or feat["换手率%"] > 12
+    )
 
     if hot:
         # 偏热不再进池（避免 signals 被「已偏强」刷成千级）

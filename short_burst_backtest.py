@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analyze_short_burst_features import load_maps, score_row
+from analyze_short_burst_features import load_maps, mv_bounds, score_row
 
 ROOT = Path(__file__).resolve().parent
 DAILY = ROOT / "data" / "daily_raw"
@@ -62,7 +62,8 @@ def is_signal(feat: dict, soft: float, hard: float, bands: dict) -> bool:
     signal_hard = float(bands.get("signal_hard", 0.85))
     if hard < signal_hard or soft < signal_soft:
         return False
-    if feat["流通市值亿"] < 40 or feat["流通市值亿"] > 800:
+    mv_lo, mv_hi = mv_bounds(bands)
+    if feat["流通市值亿"] < mv_lo or feat["流通市值亿"] > mv_hi:
         return False
     if feat["换手率%"] > 12 or feat["换手率%"] < 0.8:
         return False

@@ -7,7 +7,7 @@
       "title": "默认",
       "bands": "data/short_burst_feature_bands.json",
       "style": "默认短线画像",
-      "entry": "soft≥0.72 / hard≥0.85 / 无TopK",
+      "entry": "soft≥0.72 / hard≥0.85 / 市值100-800亿 / 无TopK",
       "exit": "+15% / -3% / 满8日 / 次日开盘买",
       "lot_hint_cny": 50000
     },
@@ -16,7 +16,7 @@
       "title": "Strict",
       "bands": "data/short_burst_feature_bands_strict.json",
       "style": "少做吃大肉",
-      "entry": "soft≥0.85 / hard≥0.95 / Top1 / 距20高≤-5%",
+      "entry": "soft≥0.85 / hard≥0.95 / Top1 / 距20高≤-5% / 市值100-800亿",
       "exit": "+15% / -3% / 满8日 / 次日开盘买",
       "lot_hint_cny": 50000
     },
@@ -25,7 +25,7 @@
       "title": "Strict_r3",
       "bands": "data/short_burst_feature_bands_strict_r3.json",
       "style": "更严入场吃大肉",
-      "entry": "Strict + 前3日涨幅%≤-2%",
+      "entry": "Strict + 前3日涨幅%≤-2% / 市值100-800亿",
       "exit": "+15% / -3% / 满8日 / 次日开盘买",
       "lot_hint_cny": 50000
     }

@@ -1,2 +1,0 @@
-﻿rank,rule_id,family,label,n,winrate,mean_net,median_net,payoff,avg_hold,mae_p50,score,desc
-1,fixed_sl10_tp25_h40,fixed,fixed_H40_SL10_TP25,668,49.4,3.909,-0.311,2.034,28.82,-6.766,0.0,硬止损 -10%；止盈 +25%；最多持有40个交易日

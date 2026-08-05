@@ -31,6 +31,7 @@ DAILY = ROOT / "data" / "daily_raw"
 LIST = ROOT / "data" / "stock_list.csv"
 INDUSTRY = ROOT / "data" / "stock_industry.csv"
 OUT_SCAN = ROOT / "data" / "rally_buy_signals.csv"
+SETUP_CFG_PATH = ROOT / "data" / "rally_buy_setup.json"
 
 # ---------- Setup（涨前画像，可观察/埋伏）----------
 # 区间贴近历史主升启动前的中位附近；全部硬满足才算 Setup（不再用软分凑 0.75）
@@ -42,10 +43,28 @@ SETUP = {
     "ret20_lo": -12.0,
     "ret20_hi": -1.0,
     "amt_ratio_hi": 0.88,  # 明显缩量/平量
-    "mv_lo": 50.0,
+    "mv_lo": 100.0,
     "mv_hi": 550.0,
     "turn_hi": 7.0,
 }
+
+
+def load_setup_cfg(path: Path | None = None) -> dict:
+    """从 data/rally_buy_setup.json 覆盖 SETUP（目前主要用于市值门槛）。"""
+    p = path or SETUP_CFG_PATH
+    if not p.exists():
+        return SETUP
+    import json
+
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    for k in ("mv_lo", "mv_hi", "px_ma20_lo", "px_ma20_hi", "dist60_lo", "dist60_hi",
+              "ret20_lo", "ret20_hi", "amt_ratio_hi", "turn_hi"):
+        if k in raw and raw[k] is not None:
+            SETUP[k] = float(raw[k])
+    return SETUP
+
+
+load_setup_cfg()
 
 # ---------- Entry（买入触发）----------
 ENTRY = {

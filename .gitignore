@@ -42,10 +42,8 @@ signal_pool_top2/
 # Local live trade ledger
 trades/
 
-# Regenerable board / stock reference dumps
+# Regenerable board / stock reference dumps + backtest dumps
 data/*.csv
-
-# Backtest / analysis text reports under data/
 data/*.txt
 
 # Analysis / scan / backtest outputs that scripts write under data/
@@ -62,33 +60,21 @@ data/short_burst_watch.csv
 data/short_burst_feature_compare.csv
 data/rally_buy_signals.csv
 
-# Rally exit: ignore exploration dumps; keep curated rule + current-strategy backtest
+# Rally exit exploration dumps (keep curated rule JSON only)
 data/rally_exit_*
 !data/rally_exit.json
-!data/rally_exit_backtest_trades_fixed_sl10_tp25_h40.csv
-!data/rally_exit_backtest_summary.txt
-!data/rally_exit_backtest_compare.csv
-!data/rally_exit_backtest_pick.json
 
 # Treasure-double exploration dumps (keep curated bands)
 data/treasure_double_*
 data/treasure_signals.csv
 !data/treasure_bands.json
 
-# Keep curated short-burst bands (needed by short screener)
+# Keep curated strategy configs (bands / registry / setup / exit)
 !data/short_burst_feature_bands.json
 !data/short_burst_feature_bands_strict.json
 !data/short_burst_feature_bands_strict_r3.json
 !data/short_strategies.json
-
-# Keep current short strategy backtest products (default / strict / r3, TP+15%)
-!data/short_burst_backtest_trades_default_tp15.csv
-!data/short_burst_backtest_summary_default_tp15.txt
-!data/short_burst_backtest_trades_strict_top1_tp15.csv
-!data/short_burst_backtest_summary_strict_top1_tp15.txt
-!data/short_burst_backtest_trades_strict_r3_top1_tp15.csv
-!data/short_burst_backtest_summary_strict_r3_top1_tp15.txt
-
+!data/rally_buy_setup.json
 !data/images/
 !data/images/**
 

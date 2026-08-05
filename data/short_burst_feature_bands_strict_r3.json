@@ -141,5 +141,6 @@
   "signal_hard": 0.95,
   "signal_soft": 0.85,
   "watch_hard": 0.85,
-  "watch_soft": 0.7999999999999999
+  "watch_soft": 0.7999999999999999,
+  "mv_yi": [100, 800]
 }

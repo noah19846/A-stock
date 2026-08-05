@@ -28,6 +28,20 @@ OUT_WATCH = ROOT / "data" / "short_burst_watch.csv"
 
 _DAILY_CACHE: dict[str, pd.DataFrame | None] = {}
 
+# 流通市值默认门槛（亿元）；策略 JSON 里可用 "mv_yi": [lo, hi] 覆盖
+DEFAULT_MV_YI = (100.0, 800.0)
+
+
+def mv_bounds(bands: dict | None = None) -> tuple[float, float]:
+    """读取流通市值门槛。优先 bands['mv_yi']=[lo,hi]。"""
+    raw = None
+    if bands:
+        raw = bands.get("mv_yi") or bands.get("mv")
+    if raw is not None and len(raw) >= 2:
+        return float(raw[0]), float(raw[1])
+    return DEFAULT_MV_YI
+
+
 FEATURE_COLS = [
     "前1日涨幅%",
     "前3日涨幅%",
@@ -314,7 +328,8 @@ def scan_today(bands: dict, name_map: dict, ind_map: dict, min_score: float = 0.
         feat = features_at(df, i)
         if feat is None:
             continue
-        if feat["流通市值亿"] < 40 or feat["流通市值亿"] > 800:
+        mv_lo, mv_hi = mv_bounds(bands)
+        if feat["流通市值亿"] < mv_lo or feat["流通市值亿"] > mv_hi:
             continue
         if feat["换手率%"] > 12 or feat["换手率%"] < 0.8:
             continue
