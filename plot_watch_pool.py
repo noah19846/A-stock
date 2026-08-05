@@ -24,7 +24,7 @@ def resolve_day_dir(date: str | None = None) -> tuple[Path, str]:
         return path, date
 
     if not POOL_DIR.exists():
-        raise FileNotFoundError(f"未找到观察池目录：{POOL_DIR}，请先运行 stock_select.py")
+            raise FileNotFoundError(f"未找到观察池目录：{POOL_DIR}，请先运行 run_daily_pool.py")
 
     dated = sorted(
         p
@@ -32,7 +32,7 @@ def resolve_day_dir(date: str | None = None) -> tuple[Path, str]:
         if p.is_dir() and len(p.name) == 10 and p.name[4] == "-" and p.name[7] == "-"
     )
     if not dated:
-        raise FileNotFoundError(f"{POOL_DIR} 下没有日期目录，请先运行 stock_select.py")
+        raise FileNotFoundError(f"{POOL_DIR} 下没有日期目录，请先运行 run_daily_pool.py")
     path = dated[-1]
     return path, path.name
 
@@ -176,7 +176,15 @@ __CHART_JS__
     } else {
       if (typeof bindTabs === 'function') bindTabs();
       render();
-      window.addEventListener('resize', () => charts.forEach(c => c.resize()));
+      if (typeof syncHeaderOffset === 'function') syncHeaderOffset();
+      if (typeof bindNavAnchors === 'function') bindNavAnchors();
+      window.addEventListener('resize', () => {
+        charts.forEach(c => c.resize());
+        if (typeof syncHeaderOffset === 'function') syncHeaderOffset();
+      });
+      if (location.hash && typeof scrollToCard === 'function') {
+        requestAnimationFrame(() => scrollToCard(location.hash.slice(1)));
+      }
     }
   </script>
 </body>
@@ -193,8 +201,13 @@ _CSS = """
   --line: #d8dee6;
   --sidebar: #f7f8fa;
   --sidebar-w: 260px;
+  /* 目录锚点跳转时避开 sticky 顶栏；JS 会按实测高度覆盖 */
+  --sticky-header-h: 120px;
 }
 * { box-sizing: border-box; }
+html {
+  scroll-padding-top: calc(var(--sticky-header-h) + 10px);
+}
 body {
   margin: 0;
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -341,11 +354,17 @@ main {
   display: grid;
   gap: 14px;
 }
+/* Tab 模式下卡片挂在 .tab-pane 下，间距要加在这里 */
+#main > .tab-pane {
+  display: grid;
+  gap: 14px;
+}
 .card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px 12px 4px;
+  scroll-margin-top: calc(var(--sticky-header-h) + 10px);
 }
 .card-head {
   display: flex;

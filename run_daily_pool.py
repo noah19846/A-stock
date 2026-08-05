@@ -281,10 +281,10 @@ def load_short_registry() -> dict:
 
 
 def daily_short_strategy_ids() -> list[str]:
-    """每日 HTML 展示的短线策略（默认去掉 scalp）。"""
+    """每日 HTML 展示的短线策略。"""
     reg = load_short_registry()
     ids = reg.get("daily_html") or ["default", "strict", "r3"]
-    return [str(x) for x in ids if str(x) != "scalp"]
+    return [str(x) for x in ids]
 
 
 def strategy_by_id(sid: str) -> dict:
@@ -401,8 +401,8 @@ def _scan_one_short(
 
 
 def _strategy_strictness(sid: str) -> int:
-    """越大越严：r3 > strict/scalp > default。"""
-    return {"r3": 3, "strict": 2, "scalp": 2, "default": 1}.get(str(sid), 0)
+    """越大越严：r3 > strict > default。"""
+    return {"r3": 3, "strict": 2, "default": 1}.get(str(sid), 0)
 
 
 def _merge_short_frames(frames: list[tuple[dict, pd.DataFrame]]) -> pd.DataFrame:
@@ -837,8 +837,8 @@ def main() -> None:
     parser.add_argument(
         "--short-strategy",
         default="",
-        choices=["", "default", "scalp", "strict", "r3"],
-        help="仅跑单策略：default | scalp | strict | r3（覆盖多策略合并）",
+        choices=["", "default", "strict", "r3"],
+        help="仅跑单策略：default | strict | r3（覆盖多策略合并）",
     )
     args = parser.parse_args()
 

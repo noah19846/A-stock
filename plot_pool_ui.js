@@ -652,6 +652,43 @@ function sma(arr, n) {
       updateHeaderCounts('long');
       buildPanel('long');
     }
+    function syncHeaderOffset() {
+      const header = document.querySelector('.content > header');
+      if (!header) return;
+      const h = Math.ceil(header.getBoundingClientRect().height);
+      if (h > 0) {
+        document.documentElement.style.setProperty('--sticky-header-h', h + 'px');
+      }
+    }
+    function scrollToCard(sid) {
+      const el = document.getElementById(sid);
+      if (!el) return;
+      syncHeaderOffset();
+      const header = document.querySelector('.content > header');
+      const offset = (header ? header.getBoundingClientRect().height : 120) + 10;
+      const top = el.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
+    function bindNavAnchors() {
+      const nav = document.getElementById('nav');
+      if (!nav || nav.dataset.anchorBound === '1') return;
+      nav.dataset.anchorBound = '1';
+      nav.addEventListener('click', (ev) => {
+        const a = ev.target.closest('a.anchor');
+        if (!a) return;
+        const href = a.getAttribute('href') || '';
+        if (!href.startsWith('#')) return;
+        const sid = href.slice(1);
+        if (!sid || !document.getElementById(sid)) return;
+        ev.preventDefault();
+        if (history.replaceState) {
+          history.replaceState(null, '', href);
+        } else {
+          location.hash = sid;
+        }
+        scrollToCard(sid);
+      });
+    }
     function bindTabs() {
       if (typeof TABBED === 'undefined' || !TABBED) return;
       document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -659,6 +696,7 @@ function sma(arr, n) {
           const tab = btn.getAttribute('data-tab');
           if (!tab || tab === currentTab) return;
           showTab(tab);
+          syncHeaderOffset();
           window.scrollTo({ top: 0, behavior: 'smooth' });
         });
       });

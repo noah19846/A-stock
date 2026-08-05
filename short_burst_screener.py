@@ -8,7 +8,7 @@
   .venv/bin/python short_burst_screener.py 601696
   .venv/bin/python short_burst_screener.py --scan
   .venv/bin/python short_burst_screener.py --scan --entry-only
-  .venv/bin/python short_burst_screener.py --scan --bands data/short_burst_feature_bands_top3.json
+  .venv/bin/python short_burst_screener.py --scan --bands data/short_burst_feature_bands_strict.json
 """
 
 from __future__ import annotations
