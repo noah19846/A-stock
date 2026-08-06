@@ -39,6 +39,9 @@ signal_pool/
 signal_pool_top3/
 signal_pool_top2/
 
+# Hot sector role HTML / JSON / CSV outputs
+hot_sectors/
+
 # Local live trade ledger
 trades/
 

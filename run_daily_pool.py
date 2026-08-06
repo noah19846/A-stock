@@ -1,5 +1,5 @@
 """
-一键日更：更新 K 线 → 中长线 → 宝藏观察 → 短线 → 写入 signal_pool
+一键日更：更新 K 线 → 中长线 → 宝藏观察 → 短线 → 热门板块 → 写入 signal_pool / hot_sectors
 
 目录结构：
   signal_pool/
@@ -7,11 +7,16 @@
       meta.json / index.html / long/ / treasure/ / short/   # final
       preview/
         meta.json / index.html / long/ / treasure/ / short/
+  hot_sectors/
+    YYYY-MM-DD/
+      meta.json / index.html / roles.json / sectors.csv
+      preview/ …
 
 用法：
   .venv/bin/python run_daily_pool.py
   .venv/bin/python run_daily_pool.py --preview
   .venv/bin/python run_daily_pool.py --treasure-only
+  .venv/bin/python run_daily_pool.py --hot-only
   .venv/bin/python run_daily_pool.py --skip-update
 """
 
@@ -29,6 +34,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 POOL_ROOT = ROOT / "signal_pool"
+HOT_ROOT = ROOT / "hot_sectors"
 PYTHON = sys.executable
 
 def log(msg: str) -> None:
@@ -733,6 +739,22 @@ def pool_day_dir(asof: str, mode: str = "final") -> Path:
     return base
 
 
+def run_hot_sectors(asof: str, *, mode: str = "final") -> dict:
+    """生成 hot_sectors/YYYY-MM-DD[/preview]/ 角色 HTML。"""
+    import gen_hot_sector_html as ghs
+
+    log("[3b/4] 热门板块角色（趋势热 + 超短反抽）…")
+    t0 = time.time()
+    # 日线已由 run_one_day / 区间预载完成，这里直接用缓存
+    meta = ghs.generate(asof=asof, mode=mode, log_fn=log)
+    log(
+        f"  hot: 趋势{meta.get('n_trend', 0)} / 超短{meta.get('n_burst', 0)} / "
+        f"可买类{meta.get('n_buyish', 0)} → {meta.get('index_html')} "
+        f"（{time.time() - t0:.1f}s）"
+    )
+    return meta
+
+
 def run_one_day(
     asof: str,
     *,
@@ -740,11 +762,12 @@ def run_one_day(
     do_long: bool = True,
     do_short: bool = True,
     do_treasure: bool = True,
+    do_hot: bool = True,
     short_bands: Path | None = None,
     short_strategy_ids: list[str] | None = None,
     preload: bool = True,
-) -> tuple[dict, dict, dict]:
-    """生成单日 signal_pool。返回 (long_stat, short_stat, treasure_stat)。"""
+) -> tuple[dict, dict, dict, dict]:
+    """生成单日 signal_pool（+可选 hot_sectors）。返回 (long, short, treasure, hot)。"""
     day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
@@ -755,6 +778,7 @@ def run_one_day(
     long_stat: dict = {}
     short_stat: dict = {}
     treasure_stat: dict = {}
+    hot_stat: dict = {}
     long_stocks: list[dict] = []
     short_stocks: list[dict] = []
     treasure_stocks: list[dict] = []
@@ -777,27 +801,33 @@ def run_one_day(
     else:
         log("[3/4] 跳过短线")
 
-    from plot_watch_pool import build_html
+    if do_long or do_short or do_treasure:
+        from plot_watch_pool import build_html
 
-    out_html = day_dir / "index.html"
-    build_html(
-        asof,
-        [],
-        out_html,
-        days=180,
-        panels={
-            "long": long_stocks,
-            "short": short_stocks,
-            "treasure": treasure_stocks,
-        },
-    )
-    log(
-        f"  合并图: long={len(long_stocks)} treasure={len(treasure_stocks)} "
-        f"short={len(short_stocks)} → {out_html}"
-    )
+        out_html = day_dir / "index.html"
+        build_html(
+            asof,
+            [],
+            out_html,
+            days=180,
+            panels={
+                "long": long_stocks,
+                "short": short_stocks,
+                "treasure": treasure_stocks,
+            },
+        )
+        log(
+            f"  合并图: long={len(long_stocks)} treasure={len(treasure_stocks)} "
+            f"short={len(short_stocks)} → {out_html}"
+        )
+        write_meta(day_dir, asof, mode, long_stat, short_stat, treasure_stat)
 
-    write_meta(day_dir, asof, mode, long_stat, short_stat, treasure_stat)
-    return long_stat, short_stat, treasure_stat
+    if do_hot:
+        hot_stat = run_hot_sectors(asof, mode=mode)
+    else:
+        log("[3b/4] 跳过热门板块")
+
+    return long_stat, short_stat, treasure_stat, hot_stat
 
 
 def main() -> None:
@@ -812,7 +842,9 @@ def main() -> None:
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--treasure-only", action="store_true")
+    parser.add_argument("--hot-only", action="store_true", help="只跑热门板块角色 HTML")
     parser.add_argument("--skip-treasure", action="store_true", help="不跑宝藏观察池")
+    parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
     parser.add_argument("--date", default="")
     parser.add_argument(
         "--from-date",
@@ -848,21 +880,30 @@ def main() -> None:
     do_long = True
     do_short = True
     do_treasure = not args.skip_treasure
-    if args.treasure_only:
+    do_hot = not args.skip_hot
+    if args.hot_only:
+        do_long = False
+        do_short = False
+        do_treasure = False
+        do_hot = True
+    elif args.treasure_only:
         do_long = False
         do_short = False
         do_treasure = True
+        do_hot = False
     elif args.long_only:
         do_short = False
+        do_hot = False
     elif args.short_only:
         do_long = False
+        do_hot = False
 
     short_bands = Path(args.short_bands) if args.short_bands.strip() else None
     short_ids: list[str] | None = None
     if args.short_strategy:
         short_ids = [args.short_strategy]
         log(f"短线单策略 {args.short_strategy}")
-    elif short_bands is None:
+    elif short_bands is None and do_short:
         short_ids = daily_short_strategy_ids()
         log(f"短线多策略合并: {', '.join(short_ids)}")
 
@@ -886,12 +927,13 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat, _ = run_one_day(
+            _, short_stat, _, _ = run_one_day(
                 d,
                 mode=mode,
                 do_long=do_long,
                 do_short=do_short,
                 do_treasure=do_treasure,
+                do_hot=do_hot,
                 short_bands=short_bands,
                 short_strategy_ids=short_ids,
                 preload=False,
@@ -904,12 +946,13 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat, _ = run_one_day(
+                _, short_stat, _, _ = run_one_day(
                     d,
                     mode=mode,
                     do_long=do_long,
                     do_short=do_short,
                     do_treasure=do_treasure,
+                    do_hot=do_hot,
                     short_bands=short_bands,
                     short_strategy_ids=short_ids,
                     preload=False,
@@ -943,18 +986,22 @@ def main() -> None:
 
     clear_feature_cache()
     asof = args.date.strip() or resolve_asof()
-    run_one_day(
+    _, _, _, hot_stat = run_one_day(
         asof,
         mode=mode,
         do_long=do_long,
         do_short=do_short,
         do_treasure=do_treasure,
+        do_hot=do_hot,
         short_bands=short_bands,
         short_strategy_ids=short_ids,
         preload=True,
     )
     log(f"完成，耗时 {time.time() - t0:.0f}s")
-    log(f"打开: {pool_day_dir(asof, mode) / 'index.html'}")
+    if do_long or do_short or do_treasure:
+        log(f"打开信号池: {pool_day_dir(asof, mode) / 'index.html'}")
+    if do_hot and hot_stat.get("index_html"):
+        log(f"打开热门板块: {hot_stat['index_html']}")
 
 
 if __name__ == "__main__":
