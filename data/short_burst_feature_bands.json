@@ -132,5 +132,5 @@
   },
   "signal_hard": 0.85,
   "signal_soft": 0.72,
-  "mv_yi": [100, 800]
+  "mv_yi": [40, 800]
 }

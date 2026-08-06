@@ -29,7 +29,7 @@ OUT_WATCH = ROOT / "data" / "short_burst_watch.csv"
 _DAILY_CACHE: dict[str, pd.DataFrame | None] = {}
 
 # 流通市值默认门槛（亿元）；策略 JSON 里可用 "mv_yi": [lo, hi] 覆盖
-DEFAULT_MV_YI = (100.0, 800.0)
+DEFAULT_MV_YI = (40.0, 800.0)
 
 
 def mv_bounds(bands: dict | None = None) -> tuple[float, float]:

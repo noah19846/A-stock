@@ -43,7 +43,7 @@ SETUP = {
     "ret20_lo": -12.0,
     "ret20_hi": -1.0,
     "amt_ratio_hi": 0.88,  # 明显缩量/平量
-    "mv_lo": 100.0,
+    "mv_lo": 50.0,
     "mv_hi": 550.0,
     "turn_hi": 7.0,
 }
