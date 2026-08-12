@@ -1,6 +1,7 @@
 {
   "version": 1,
   "daily_html": ["default", "strict", "r3"],
+  "daily_scalp_tabs": ["scalp"],
   "strategies": [
     {
       "id": "default",
@@ -27,6 +28,24 @@
       "style": "更严入场吃大肉",
       "entry": "Strict + 前3日涨幅%≤-2% / 市值40-800亿",
       "exit": "+15% / -3% / 满8日 / 次日开盘买",
+      "lot_hint_cny": 50000
+    },
+    {
+      "id": "scalp",
+      "title": "Scalp",
+      "bands": "data/short_burst_feature_bands_scalp.json",
+      "style": "快进快出吃2～3个点",
+      "entry": "soft≥0.85 / hard全过 / 距20高-8～-4.5 / 前5日>0 / 前1日≤-1.3 / 市值40-800亿",
+      "exit": "+3% / -2% / 满2日 / 次日开盘买 / 成本10bp",
+      "lot_hint_cny": 50000
+    },
+    {
+      "id": "scalp_wide",
+      "title": "Scalp宽",
+      "bands": "data/short_burst_feature_bands_scalp_wide.json",
+      "style": "快进快出宽版对照（不进每日池）",
+      "entry": "soft≥0.85 / hard≥0.85 / 市值40-800亿",
+      "exit": "+3% / -2% / 满2日 / 次日开盘买 / 成本10bp",
       "lot_hint_cny": 50000
     }
   ]

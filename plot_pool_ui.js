@@ -55,7 +55,7 @@ function sma(arr, n) {
 
     /** 短线看近端均线，长线看中期；另一条默认隐藏，图例可点开。 */
     function maLegendSelected(panel) {
-      const isShort = panel === 'short';
+      const isShort = panel === 'short' || panel === 'scalp';
       return {
         MA5: isShort,
         MA10: true,
@@ -487,9 +487,11 @@ function sma(arr, n) {
         const nl = document.getElementById('n-long');
         const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
+        const np = document.getElementById('n-scalp');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+        if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
       }
     }
     function ensureTabPanes() {
@@ -499,10 +501,12 @@ function sma(arr, n) {
       nav.innerHTML =
         '<div id="nav-long" class="tab-pane"></div>' +
         '<div id="nav-short" class="tab-pane" hidden></div>' +
+        '<div id="nav-scalp" class="tab-pane" hidden></div>' +
         '<div id="nav-treasure" class="tab-pane" hidden></div>';
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
         '<div id="main-short" class="tab-pane" hidden></div>' +
+        '<div id="main-scalp" class="tab-pane" hidden></div>' +
         '<div id="main-treasure" class="tab-pane" hidden></div>';
       panesReady = true;
     }
@@ -520,7 +524,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short', 'treasure'].forEach(t => {
+      ['long', 'short', 'scalp', 'treasure'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);

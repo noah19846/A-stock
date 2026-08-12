@@ -76,6 +76,8 @@ data/treasure_signals.csv
 !data/short_burst_feature_bands.json
 !data/short_burst_feature_bands_strict.json
 !data/short_burst_feature_bands_strict_r3.json
+!data/short_burst_feature_bands_scalp.json
+!data/short_burst_feature_bands_scalp_wide.json
 !data/short_strategies.json
 !data/rally_buy_setup.json
 !data/images/

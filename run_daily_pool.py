@@ -287,9 +287,16 @@ def load_short_registry() -> dict:
 
 
 def daily_short_strategy_ids() -> list[str]:
-    """每日 HTML 展示的短线策略。"""
+    """每日 HTML「短线」tab 合并的策略（default/strict/r3）。"""
     reg = load_short_registry()
     ids = reg.get("daily_html") or ["default", "strict", "r3"]
+    return [str(x) for x in ids]
+
+
+def daily_scalp_strategy_ids() -> list[str]:
+    """每日 HTML 独立「Scalp」tab 的策略。"""
+    reg = load_short_registry()
+    ids = reg.get("daily_scalp_tabs") or ["scalp"]
     return [str(x) for x in ids]
 
 
@@ -540,8 +547,14 @@ def run_short(
     asof: str | None = None,
     bands_path: Path | None = None,
     strategy_ids: list[str] | None = None,
-) -> tuple[dict, list[dict]]:
-    """短线筛选。默认合并 daily_html 三套（default/strict/r3）；单策略时用 strategy_ids 或 bands_path。"""
+    scalp_strategy_ids: list[str] | None = None,
+) -> tuple[dict, list[dict], dict, list[dict]]:
+    """短线筛选。
+
+    默认合并 daily_html（default/strict/r3）进「短线」tab；
+    若传入 scalp_strategy_ids（如 ["scalp"]），同一次扫描另出「Scalp」tab。
+    返回 (short_stat, short_stocks, scalp_stat, scalp_stocks)。
+    """
     import short_burst_screener as sbs
 
     out_dir = day_dir / "short"
@@ -551,20 +564,11 @@ def run_short(
         old_html.unlink()
 
     t0 = time.time()
-    # 解析策略列表
-    if bands_path is not None and strategy_ids is None:
-        ids = ["default"]
-        log("[3/4] 短线筛选（单 bands）…")
-        strategy_specs: list[tuple[str, dict, dict]] = []  # sid, meta, bands
-        band_cfg = sbs.load_bands(bands_path if bands_path.is_absolute() else ROOT / bands_path)
-        strategy_specs.append(
-            ("default", {"id": "default", "title": "默认", "bands": str(bands_path)}, band_cfg)
-        )
-    else:
-        ids = strategy_ids or daily_short_strategy_ids()
-        log(f"[3/4] 短线筛选（多策略一次扫描: {', '.join(ids)}）…")
-        strategy_specs = []
-        for sid in ids:
+    scalp_ids = [str(x) for x in (scalp_strategy_ids or [])]
+
+    def _load_specs(id_list: list[str]) -> list[tuple[str, dict, dict]]:
+        specs: list[tuple[str, dict, dict]] = []
+        for sid in id_list:
             meta = strategy_by_id(sid)
             bands = Path(meta["bands"])
             if not bands.is_absolute():
@@ -577,47 +581,85 @@ def run_short(
                 f"  [{sid}/{meta.get('title', sid)}] bands={bands.name} "
                 f"top_k={band_cfg.get('daily_top_k', 0)}"
             )
-            strategy_specs.append((sid, meta, band_cfg))
+            specs.append((sid, meta, band_cfg))
+        return specs
 
+    # 解析策略列表
+    if bands_path is not None and strategy_ids is None:
+        ids = ["default"]
+        log("[3/4] 短线筛选（单 bands）…")
+        strategy_specs: list[tuple[str, dict, dict]] = [
+            (
+                "default",
+                {"id": "default", "title": "默认", "bands": str(bands_path)},
+                sbs.load_bands(bands_path if bands_path.is_absolute() else ROOT / bands_path),
+            )
+        ]
+        scalp_specs: list[tuple[str, dict, dict]] = []
+    else:
+        ids = list(strategy_ids) if strategy_ids is not None else daily_short_strategy_ids()
+        scan_note = list(ids) + [s for s in scalp_ids if s not in ids]
+        log(f"[3/4] 短线筛选（多策略一次扫描: {', '.join(scan_note) or '(空)'}）…")
+        strategy_specs = _load_specs(ids)
+        scalp_specs = _load_specs([s for s in scalp_ids if s not in ids])
+
+    all_specs = strategy_specs + scalp_specs
     scanned = sbs.scan_multi(
-        [(sid, bands) for sid, _, bands in strategy_specs],
+        [(sid, bands) for sid, _, bands in all_specs],
         asof=asof,
         entry_only=False,
     )
-    frames: list[tuple[dict, pd.DataFrame]] = []
-    for sid, meta, _bands in strategy_specs:
-        df = scanned.get(sid, pd.DataFrame())
-        if not df.empty:
-            out = df.copy()
-            out["strategy_id"] = sid
-            out["strategy_title"] = str(meta.get("title", sid))
-            frames.append((meta, out))
-        else:
-            frames.append((meta, df))
 
-    # 每策略落盘
-    per_stat: dict[str, dict] = {}
-    for meta, df in frames:
-        sid = str(meta.get("id", "unknown"))
-        sub = out_dir / sid
-        sub.mkdir(parents=True, exist_ok=True)
-        if df.empty:
-            pd.DataFrame().to_csv(sub / "signals.csv", index=False, encoding="utf-8-sig")
-            pd.DataFrame().to_csv(sub / "now.csv", index=False, encoding="utf-8-sig")
-            per_stat[sid] = {"rows": 0, "buy": 0, "watch": 0}
-            continue
-        now = df[df["stage"] == "可短打"].copy()
-        df.to_csv(sub / "signals.csv", index=False, encoding="utf-8-sig")
-        now.to_csv(sub / "now.csv", index=False, encoding="utf-8-sig")
-        n_buy = int((df["stage"] == "可短打").sum())
-        n_watch = int((df["stage"] == "观察").sum())
-        per_stat[sid] = {"rows": len(df), "buy": n_buy, "watch": n_watch}
-        log(f"    {sid}: 可短打 {n_buy} / 观察 {n_watch}")
-        if len(df) > 0:
-            title = f"short/{sid}"
-            if meta.get("title"):
-                title = f"short/{sid}({meta.get('title')})"
-            log_signal_table(df, title=title)
+    def _frames_from_specs(
+        specs: list[tuple[str, dict, dict]],
+    ) -> list[tuple[dict, pd.DataFrame]]:
+        out: list[tuple[dict, pd.DataFrame]] = []
+        for sid, meta, _bands in specs:
+            df = scanned.get(sid, pd.DataFrame())
+            if not df.empty:
+                row = df.copy()
+                row["strategy_id"] = sid
+                row["strategy_title"] = str(meta.get("title", sid))
+                out.append((meta, row))
+            else:
+                out.append((meta, df))
+        return out
+
+    frames = _frames_from_specs(strategy_specs)
+    scalp_frames = _frames_from_specs(scalp_specs)
+
+    def _write_strategy_frames(
+        base: Path,
+        frame_list: list[tuple[dict, pd.DataFrame]],
+        *,
+        log_prefix: str,
+    ) -> dict[str, dict]:
+        base.mkdir(parents=True, exist_ok=True)
+        per: dict[str, dict] = {}
+        for meta, df in frame_list:
+            sid = str(meta.get("id", "unknown"))
+            sub = base / sid
+            sub.mkdir(parents=True, exist_ok=True)
+            if df.empty:
+                pd.DataFrame().to_csv(sub / "signals.csv", index=False, encoding="utf-8-sig")
+                pd.DataFrame().to_csv(sub / "now.csv", index=False, encoding="utf-8-sig")
+                per[sid] = {"rows": 0, "buy": 0, "watch": 0}
+                continue
+            now = df[df["stage"] == "可短打"].copy()
+            df.to_csv(sub / "signals.csv", index=False, encoding="utf-8-sig")
+            now.to_csv(sub / "now.csv", index=False, encoding="utf-8-sig")
+            n_buy = int((df["stage"] == "可短打").sum())
+            n_watch = int((df["stage"] == "观察").sum())
+            per[sid] = {"rows": len(df), "buy": n_buy, "watch": n_watch}
+            log(f"    {sid}: 可短打 {n_buy} / 观察 {n_watch}")
+            if len(df) > 0:
+                title = f"{log_prefix}/{sid}"
+                if meta.get("title"):
+                    title = f"{log_prefix}/{sid}({meta.get('title')})"
+                log_signal_table(df, title=title)
+        return per
+
+    per_stat = _write_strategy_frames(out_dir, frames, log_prefix="short")
 
     df_out = _merge_short_frames(frames)
     if not df_out.empty:
@@ -637,14 +679,59 @@ def run_short(
     )
     if len(df_out) > 0:
         log_signal_table(df_out, title="short 合并明细")
-    return {
+
+    # Scalp 独立目录 + tab
+    scalp_dir = day_dir / "scalp"
+    scalp_stocks: list[dict] = []
+    scalp_per: dict[str, dict] = {}
+    if scalp_frames:
+        scalp_per = _write_strategy_frames(scalp_dir, scalp_frames, log_prefix="scalp")
+        scalp_df = _merge_short_frames(scalp_frames)
+        if not scalp_df.empty:
+            scalp_df[scalp_df["stage"] == "可短打"].to_csv(
+                scalp_dir / "now.csv", index=False, encoding="utf-8-sig"
+            )
+        else:
+            pd.DataFrame().to_csv(scalp_dir / "now.csv", index=False, encoding="utf-8-sig")
+        scalp_df.to_csv(scalp_dir / "signals.csv", index=False, encoding="utf-8-sig")
+        scalp_stocks = stocks_from_df(scalp_df, asof=asof)
+        sb = int((scalp_df["stage"] == "可短打").sum()) if not scalp_df.empty else 0
+        sw = int((scalp_df["stage"] == "观察").sum()) if not scalp_df.empty else 0
+        log(
+            f"  scalp tab: 共 {len(scalp_df)} 条（可短打 {sb} / 观察 {sw}）"
+            f" → {scalp_dir / 'signals.csv'}；HTML 列表 {len(scalp_stocks)} 只"
+        )
+        if len(scalp_df) > 0:
+            log_signal_table(scalp_df, title="scalp 明细")
+    else:
+        scalp_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame().to_csv(scalp_dir / "signals.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame().to_csv(scalp_dir / "now.csv", index=False, encoding="utf-8-sig")
+
+    short_stat = {
         "rows": len(df_out),
         "buy": n_buy,
         "watch": n_watch,
         "charts": len(stocks),
         "strategies": per_stat,
         "strategy_ids": [m.get("id") for m, _ in frames],
-    }, stocks
+    }
+    scalp_stat = {
+        "rows": 0,
+        "buy": 0,
+        "watch": 0,
+        "charts": len(scalp_stocks),
+        "strategies": scalp_per,
+        "strategy_ids": [m.get("id") for m, _ in scalp_frames],
+    }
+    if scalp_frames:
+        sdf = _merge_short_frames(scalp_frames)
+        scalp_stat["rows"] = len(sdf)
+        scalp_stat["buy"] = int((sdf["stage"] == "可短打").sum()) if not sdf.empty else 0
+        scalp_stat["watch"] = int((sdf["stage"] == "观察").sum()) if not sdf.empty else 0
+        scalp_stat["charts"] = len(scalp_stocks)
+
+    return short_stat, stocks, scalp_stat, scalp_stocks
 
 
 def short_has_strict_or_r3_buy(short_stat: dict) -> bool:
@@ -709,6 +796,7 @@ def write_meta(
     long_stat: dict,
     short_stat: dict,
     treasure_stat: dict | None = None,
+    scalp_stat: dict | None = None,
 ) -> None:
     meta = {
         "date": asof,
@@ -719,6 +807,7 @@ def write_meta(
         "index_html": str(day_dir / "index.html"),
         "long": long_stat,
         "short": short_stat,
+        "scalp": scalp_stat or {},
         "treasure": treasure_stat or {},
         "workflow": {
             "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/",
@@ -765,9 +854,10 @@ def run_one_day(
     do_hot: bool = True,
     short_bands: Path | None = None,
     short_strategy_ids: list[str] | None = None,
+    scalp_strategy_ids: list[str] | None = None,
     preload: bool = True,
-) -> tuple[dict, dict, dict, dict]:
-    """生成单日 signal_pool（+可选 hot_sectors）。返回 (long, short, treasure, hot)。"""
+) -> tuple[dict, dict, dict, dict, dict]:
+    """生成单日 signal_pool（+可选 hot_sectors）。返回 (long, short, treasure, scalp, hot)。"""
     day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
@@ -778,10 +868,12 @@ def run_one_day(
     long_stat: dict = {}
     short_stat: dict = {}
     treasure_stat: dict = {}
+    scalp_stat: dict = {}
     hot_stat: dict = {}
     long_stocks: list[dict] = []
     short_stocks: list[dict] = []
     treasure_stocks: list[dict] = []
+    scalp_stocks: list[dict] = []
 
     if do_long:
         long_stat, long_stocks = run_long(day_dir, asof=asof)
@@ -792,11 +884,12 @@ def run_one_day(
     else:
         log("[2b/4] 跳过宝藏观察")
     if do_short:
-        short_stat, short_stocks = run_short(
+        short_stat, short_stocks, scalp_stat, scalp_stocks = run_short(
             day_dir,
             asof=asof,
             bands_path=short_bands,
             strategy_ids=short_strategy_ids,
+            scalp_strategy_ids=scalp_strategy_ids,
         )
     else:
         log("[3/4] 跳过短线")
@@ -813,21 +906,24 @@ def run_one_day(
             panels={
                 "long": long_stocks,
                 "short": short_stocks,
+                "scalp": scalp_stocks,
                 "treasure": treasure_stocks,
             },
         )
         log(
-            f"  合并图: long={len(long_stocks)} treasure={len(treasure_stocks)} "
-            f"short={len(short_stocks)} → {out_html}"
+            f"  合并图: long={len(long_stocks)} short={len(short_stocks)} "
+            f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} → {out_html}"
         )
-        write_meta(day_dir, asof, mode, long_stat, short_stat, treasure_stat)
+        write_meta(
+            day_dir, asof, mode, long_stat, short_stat, treasure_stat, scalp_stat=scalp_stat
+        )
 
     if do_hot:
         hot_stat = run_hot_sectors(asof, mode=mode)
     else:
         log("[3b/4] 跳过热门板块")
 
-    return long_stat, short_stat, treasure_stat, hot_stat
+    return long_stat, short_stat, treasure_stat, scalp_stat, hot_stat
 
 
 def main() -> None:
@@ -869,8 +965,8 @@ def main() -> None:
     parser.add_argument(
         "--short-strategy",
         default="",
-        choices=["", "default", "strict", "r3"],
-        help="仅跑单策略：default | strict | r3（覆盖多策略合并）",
+        choices=["", "default", "strict", "r3", "scalp"],
+        help="仅跑单策略：default | strict | r3 | scalp（覆盖多策略合并）",
     )
     args = parser.parse_args()
 
@@ -900,12 +996,22 @@ def main() -> None:
 
     short_bands = Path(args.short_bands) if args.short_bands.strip() else None
     short_ids: list[str] | None = None
+    scalp_ids: list[str] | None = None
     if args.short_strategy:
-        short_ids = [args.short_strategy]
-        log(f"短线单策略 {args.short_strategy}")
+        if args.short_strategy == "scalp":
+            short_ids = []
+            scalp_ids = ["scalp"]
+            log("仅 Scalp tab")
+        else:
+            short_ids = [args.short_strategy]
+            scalp_ids = []
+            log(f"短线单策略 {args.short_strategy}")
     elif short_bands is None and do_short:
         short_ids = daily_short_strategy_ids()
-        log(f"短线多策略合并: {', '.join(short_ids)}")
+        scalp_ids = daily_scalp_strategy_ids()
+        log(f"短线多策略合并: {', '.join(short_ids)}；Scalp tab: {', '.join(scalp_ids)}")
+    elif do_short:
+        scalp_ids = []
 
     from_d = args.from_date.strip()
     to_d = args.to_date.strip()
@@ -927,7 +1033,7 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat, _, _ = run_one_day(
+            _, short_stat, _, _, _ = run_one_day(
                 d,
                 mode=mode,
                 do_long=do_long,
@@ -936,6 +1042,7 @@ def main() -> None:
                 do_hot=do_hot,
                 short_bands=short_bands,
                 short_strategy_ids=short_ids,
+                scalp_strategy_ids=scalp_ids,
                 preload=False,
             )
             if do_short and short_has_strict_or_r3_buy(short_stat):
@@ -946,7 +1053,7 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat, _, _ = run_one_day(
+                _, short_stat, _, _, _ = run_one_day(
                     d,
                     mode=mode,
                     do_long=do_long,
@@ -955,6 +1062,7 @@ def main() -> None:
                     do_hot=do_hot,
                     short_bands=short_bands,
                     short_strategy_ids=short_ids,
+                    scalp_strategy_ids=scalp_ids,
                     preload=False,
                 )
                 if short_has_strict_or_r3_buy(short_stat):
@@ -986,7 +1094,7 @@ def main() -> None:
 
     clear_feature_cache()
     asof = args.date.strip() or resolve_asof()
-    _, _, _, hot_stat = run_one_day(
+    _, _, _, _, hot_stat = run_one_day(
         asof,
         mode=mode,
         do_long=do_long,
@@ -995,6 +1103,7 @@ def main() -> None:
         do_hot=do_hot,
         short_bands=short_bands,
         short_strategy_ids=short_ids,
+        scalp_strategy_ids=scalp_ids,
         preload=True,
     )
     log(f"完成，耗时 {time.time() - t0:.0f}s")
