@@ -4,10 +4,11 @@
 用法：
   .venv/bin/python trades_log.py list
   .venv/bin/python trades_log.py open
-  .venv/bin/python trades_log.py buy --code 603507 --shares 200 --fill 23.16 --cost 23.232 \\
+  .venv/bin/python trades_log.py buy --code 603507 --shares 200 --fill 23.16 \\
       --strategy short/default --signal-date 2026-08-03
-  .venv/bin/python trades_log.py buy --code 600000 --shares 100 --fill 10 --strategy long/rally
-  .venv/bin/python trades_log.py sell --id T20260803-001 --price 24.50 --reason 止盈
+  .venv/bin/python trades_log.py sell --id T20260803-001 --price 23.82 --pnl 118.52 --reason 清仓
+
+只记买入价/卖出价与实际盈利；手续费 = 卖出金额 - 买入金额 - 盈利（可负）。
 
 默认离场（未显式传 --stop/--target/--hold 时）：
   short/*  → 止损-3% / 止盈+15% / 最多8日
@@ -35,7 +36,6 @@ COLS = [
     "side",
     "shares",
     "fill_price",
-    "cost_price",
     "amount",
     "fees",
     "entry_date",
@@ -66,11 +66,17 @@ def load() -> pd.DataFrame:
     df = pd.read_csv(LEDGER, dtype={"code": str, "trade_id": str})
     if "code" in df.columns:
         df["code"] = df["code"].astype(str).str.zfill(6)
+    # 兼容旧列：含费成本价已废弃
+    if "cost_price" in df.columns:
+        df = df.drop(columns=["cost_price"])
+    df = df.fillna("")
     return df
 
 
 def save(df: pd.DataFrame) -> None:
     out = df.copy()
+    if "cost_price" in out.columns:
+        out = out.drop(columns=["cost_price"])
     for c in COLS:
         if c not in out.columns:
             out[c] = ""
@@ -129,13 +135,13 @@ def cmd_list(status: str = "") -> None:
             "name",
             "shares",
             "fill_price",
-            "cost_price",
+            "exit_price",
+            "fees",
             "entry_date",
+            "exit_date",
             "strategy",
             "stop_price",
             "target_price",
-            "exit_date",
-            "exit_price",
             "pnl",
             "pnl_pct",
             "notes",
@@ -172,11 +178,9 @@ def cmd_buy(args: argparse.Namespace) -> None:
     code = str(args.code).zfill(6)
     shares = int(args.shares)
     fill = float(args.fill)
-    cost = float(args.cost) if args.cost is not None else fill
     entry_date = args.date or datetime.now().strftime("%Y-%m-%d")
     signal_date = args.signal_date or entry_date
-    amount = round(cost * shares, 2)
-    fees = round((cost - fill) * shares, 2)
+    amount = round(fill * shares, 2)
     stop = args.stop
     target = args.target
     hold = args.hold
@@ -185,17 +189,17 @@ def cmd_buy(args: argparse.Namespace) -> None:
 
     if kind == "short":
         if stop is None:
-            stop = round(cost * (1 - 0.03), 2)
+            stop = round(fill * (1 - 0.03), 2)
         if target is None:
-            target = round(cost * (1 + 0.15), 2)
+            target = round(fill * (1 + 0.15), 2)
         if hold is None:
             hold = 8
     elif kind == "long":
         rex = load_rally_exit()
         if stop is None:
-            stop = round(cost * (1 - float(rex.get("stop", 0.10))), 2)
+            stop = round(fill * (1 - float(rex.get("stop", 0.10))), 2)
         if target is None:
-            target = round(cost * (1 + float(rex.get("target", 0.25))), 2)
+            target = round(fill * (1 + float(rex.get("target", 0.25))), 2)
         if hold is None:
             hold = int(rex.get("hold_days_max", 40))
         early = (
@@ -213,9 +217,8 @@ def cmd_buy(args: argparse.Namespace) -> None:
         "side": "buy",
         "shares": shares,
         "fill_price": fill,
-        "cost_price": cost,
         "amount": amount,
-        "fees": fees,
+        "fees": "",
         "entry_date": entry_date,
         "signal_date": signal_date,
         "strategy": args.strategy or "",
@@ -234,7 +237,7 @@ def cmd_buy(args: argparse.Namespace) -> None:
     save(df)
     log(
         f"已记账 {row['trade_id']}  {code} {row['name']}  {shares}股  "
-        f"成交 {fill} / 含费成本 {cost}  止损 {row['stop_price']}  止盈 {row['target_price']}"
+        f"买入价 {fill}  止损 {row['stop_price']}  止盈 {row['target_price']}"
         f"  持有上限 {row['hold_days_max']}"
         + (f"  notes={notes}" if notes else "")
     )
@@ -251,15 +254,18 @@ def cmd_sell(args: argparse.Namespace) -> None:
     if str(df.at[i, "status"]) != "open":
         raise SystemExit(f"{tid} 状态不是 open：{df.at[i, 'status']}")
     exit_price = float(args.price)
+    pnl = round(float(args.pnl), 2)
     shares = int(df.at[i, "shares"])
-    cost = float(df.at[i, "cost_price"])
-    # 卖出暂按成交价估算；手续费可之后在 notes 补
-    proceeds = exit_price * shares
-    cost_amt = cost * shares
-    pnl = round(proceeds - cost_amt, 2)
-    pnl_pct = round((exit_price / cost - 1.0) * 100, 3)
+    fill = float(df.at[i, "fill_price"])
+    buy_amt = round(fill * shares, 2)
+    sell_amt = round(exit_price * shares, 2)
+    # 手续费 = 卖出金额 - 买入金额 - 盈利
+    fees = round(sell_amt - buy_amt - pnl, 2)
+    pnl_pct = round(pnl / buy_amt * 100, 3) if buy_amt else 0.0
     exit_date = args.date or datetime.now().strftime("%Y-%m-%d")
     df.at[i, "status"] = "closed"
+    df.at[i, "amount"] = buy_amt
+    df.at[i, "fees"] = fees
     df.at[i, "exit_date"] = exit_date
     df.at[i, "exit_price"] = exit_price
     df.at[i, "exit_reason"] = args.reason or ""
@@ -270,8 +276,8 @@ def cmd_sell(args: argparse.Namespace) -> None:
         df.at[i, "notes"] = (prev + " | " if prev else "") + args.notes
     save(df)
     log(
-        f"已平仓 {tid}  出场 {exit_price}  PnL {pnl:+.2f} ({pnl_pct:+.3f}%)  "
-        f"原因={args.reason or '-'}"
+        f"已平仓 {tid}  卖出价 {exit_price}  PnL {pnl:+.2f} ({pnl_pct:+.3f}%)  "
+        f"手续费 {fees:.2f}  原因={args.reason or '-'}"
     )
     log(f"→ {LEDGER}")
 
@@ -288,8 +294,7 @@ def main() -> None:
     p_b = sub.add_parser("buy", help="记一笔买入")
     p_b.add_argument("--code", required=True)
     p_b.add_argument("--shares", type=int, required=True)
-    p_b.add_argument("--fill", type=float, required=True, help="成交价（不含费）")
-    p_b.add_argument("--cost", type=float, default=None, help="含费成本价，默认=成交价")
+    p_b.add_argument("--fill", type=float, required=True, help="买入成交价")
     p_b.add_argument("--name", default="")
     p_b.add_argument("--date", default="", help="买入日 YYYY-MM-DD")
     p_b.add_argument("--signal-date", default="")
@@ -301,7 +306,8 @@ def main() -> None:
 
     p_s = sub.add_parser("sell", help="平仓")
     p_s.add_argument("--id", required=True, help="trade_id")
-    p_s.add_argument("--price", type=float, required=True)
+    p_s.add_argument("--price", type=float, required=True, help="卖出成交价")
+    p_s.add_argument("--pnl", type=float, required=True, help="实际盈利（可为负）")
     p_s.add_argument("--date", default="")
     p_s.add_argument("--reason", default="")
     p_s.add_argument("--notes", default="")

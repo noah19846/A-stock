@@ -573,7 +573,16 @@ body {{
     var(--bg);
   line-height: 1.45;
 }}
-.wrap {{ max-width: 1180px; margin: 0 auto; padding: 28px 20px 64px; }}
+.wrap {{
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 0 28px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 20px 64px;
+  align-items: start;
+}}
+.main {{ min-width: 0; }}
 header.hero {{
   padding: 8px 0 22px;
   border-bottom: 1px solid var(--line);
@@ -633,29 +642,35 @@ nav.toc a {{
 }}
 nav.toc a:hover {{ background: #cfe4f2; }}
 nav.page-toc {{
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 12px 16px 14px;
-  margin: 0 0 22px;
+  padding: 12px 12px 14px;
+  font-size: 0.82rem;
 }}
 nav.page-toc .toc-title {{
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   margin-bottom: 8px;
+  letter-spacing: 0.04em;
 }}
 nav.page-toc ol {{
   margin: 0;
-  padding-left: 1.25em;
+  padding-left: 1.15em;
 }}
-nav.page-toc li {{ margin: 4px 0; }}
+nav.page-toc li {{ margin: 3px 0; }}
 nav.page-toc ul {{
-  margin: 4px 0 6px;
-  padding-left: 1.1em;
+  margin: 3px 0 5px;
+  padding-left: 1em;
   list-style: disc;
 }}
 nav.page-toc a {{
   color: var(--army);
   text-decoration: none;
+  line-height: 1.35;
 }}
 nav.page-toc a:hover {{ text-decoration: underline; }}
 h2 {{
@@ -749,6 +764,19 @@ footer {{
   color: var(--muted);
   font-size: 0.82rem;
 }}
+@media (max-width: 960px) {{
+  .wrap {{
+    grid-template-columns: 1fr;
+    padding-top: 12px;
+  }}
+  nav.page-toc {{
+    position: relative;
+    top: 0;
+    max-height: none;
+    margin-bottom: 16px;
+  }}
+  .rules {{ grid-template-columns: 1fr; }}
+}}
 @media (max-width: 800px) {{
   .rules {{ grid-template-columns: 1fr; }}
 }}
@@ -756,6 +784,8 @@ footer {{
 </head>
 <body>
 <div class="wrap">
+  {page_toc}
+  <div class="main">
   <header class="hero">
     <div class="brand">SECTOR ROLES</div>
     <h1>热门行业角色划分</h1>
@@ -769,8 +799,6 @@ footer {{
     </div>
     <div class="note-box">结论统计：{esc(count_line)}。「可买」只表示相对现价首买是否合适，不是保证赚钱。北向接口本轮不可用。</div>
   </header>
-
-  {page_toc}
 
   <h2 id="buy-rules">买入依据（规则引擎）</h2>
   <div class="summary">
@@ -819,6 +847,7 @@ footer {{
     由 gen_hot_sector_html.py 生成 · 输出目录 hot_sectors/ · 买入结论为规则引擎，实盘请再人工确认。
     · <a href="#toc">回目录</a>
   </footer>
+  </div>
 </div>
 </body>
 </html>
