@@ -4,6 +4,7 @@
 用法：
   .venv/bin/python trades_log.py list
   .venv/bin/python trades_log.py open
+  .venv/bin/python trades_log.py summary
   .venv/bin/python trades_log.py buy --code 603507 --shares 200 --fill 23.16 \\
       --strategy short/default --signal-date 2026-08-03
   .venv/bin/python trades_log.py sell --id T20260803-001 --price 23.82 --pnl 118.52 --reason 清仓
@@ -282,6 +283,84 @@ def cmd_sell(args: argparse.Namespace) -> None:
     log(f"→ {LEDGER}")
 
 
+def _fnum(x, nd: int = 2):
+    try:
+        if x == "" or x is None:
+            return None
+        return round(float(x), nd)
+    except Exception:
+        return None
+
+
+def cmd_summary() -> None:
+    """平仓明细 + 胜率/累计盈利 + 当前持仓。"""
+    df = load()
+    closed = df[df["status"].astype(str) == "closed"].copy()
+    open_ = df[df["status"].astype(str) == "open"].copy()
+
+    log("=" * 72)
+    log("已平仓交易")
+    log("=" * 72)
+    total_pnl = 0.0
+    wins = 0
+    n = 0
+    for _, r in closed.iterrows():
+        n += 1
+        pnl = _fnum(r["pnl"]) or 0.0
+        total_pnl += pnl
+        if pnl > 0:
+            wins += 1
+        fill = _fnum(r["fill_price"])
+        exit_p = _fnum(r["exit_price"])
+        stop = _fnum(r["stop_price"])
+        target = _fnum(r["target_price"])
+        hit_stop = exit_p is not None and stop is not None and exit_p <= stop
+        hit_tgt = exit_p is not None and target is not None and exit_p >= target
+        flag = []
+        if hit_stop:
+            flag.append("触止损")
+        if hit_tgt:
+            flag.append("触止盈")
+        flag_s = " / ".join(flag) if flag else "未触止损止盈线"
+        pct = _fnum(r["pnl_pct"], 3)
+        pct_s = f"{pct:+.3f}%" if pct is not None else "—"
+        log(
+            f"{r['trade_id']}  {r['code']} {r['name']}\n"
+            f"  日期 {r['entry_date']} → {r['exit_date']}  |  策略 {r['strategy']}  |  "
+            f"原因 {r['exit_reason'] or '-'}\n"
+            f"  买入 {fill} × {int(r['shares'])}股 = {_fnum(r['amount'])}  →  卖出 {exit_p}\n"
+            f"  止损 {stop}  止盈 {target}  |  {flag_s}\n"
+            f"  PnL {pnl:+.2f}  ({pct_s})  手续费 {_fnum(r['fees'])}"
+        )
+        log("")
+
+    log("=" * 72)
+    log("汇总")
+    log("=" * 72)
+    log(f"平仓笔数: {n}")
+    log(f"盈利笔数: {wins}  亏损笔数: {n - wins}")
+    log(f"胜率: {wins / n * 100:.1f}%" if n else "胜率: -")
+    log(f"累计盈利: {total_pnl:+.2f}")
+    if n:
+        log(f"平均每笔: {total_pnl / n:+.2f}")
+
+    if len(open_):
+        log("")
+        log("=" * 72)
+        log("持仓中")
+        log("=" * 72)
+        for _, r in open_.iterrows():
+            notes = str(r.get("notes") or "").strip()
+            log(
+                f"{r['trade_id']}  {r['code']} {r['name']}  "
+                f"{int(r['shares'])}股 @ {_fnum(r['fill_price'])}  "
+                f"买入日 {r['entry_date']}  止损 {_fnum(r['stop_price'])}  "
+                f"止盈 {_fnum(r['target_price'])}"
+                + (f"  notes={notes}" if notes else "")
+            )
+    log(f"\n→ {LEDGER}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="实盘交易台账")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -290,6 +369,7 @@ def main() -> None:
     p_l.add_argument("--status", default="", help="open / closed")
 
     sub.add_parser("open", help="只看持仓中")
+    sub.add_parser("summary", help="平仓明细 + 胜率累计 + 持仓")
 
     p_b = sub.add_parser("buy", help="记一笔买入")
     p_b.add_argument("--code", required=True)
@@ -317,6 +397,8 @@ def main() -> None:
         cmd_list(args.status)
     elif args.cmd == "open":
         cmd_list("open")
+    elif args.cmd == "summary":
+        cmd_summary()
     elif args.cmd == "buy":
         cmd_buy(args)
     elif args.cmd == "sell":
