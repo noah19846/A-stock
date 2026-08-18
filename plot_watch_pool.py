@@ -295,6 +295,22 @@ nav a.anchor.buy { color: #c62828; font-weight: 700; }
   border: 1px solid #b6d0fe;
   flex-shrink: 1;
 }
+.nav-industry-hot {
+  background: #fff3e0;
+  color: #c05600;
+  border-color: #ffcc80;
+}
+.nav-hot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  line-height: 0;
+  flex-shrink: 0;
+}
+.nav-hot .hot-torch-icon { display: block; }
 .nav-buy {
   display: inline-flex;
   align-items: center;
@@ -400,6 +416,18 @@ main {
   color: #0b57d0;
   border: 1px solid #b6d0fe;
 }
+.badge-industry-hot {
+  background: #fff3e0;
+  color: #c05600;
+  border-color: #ffcc80;
+}
+.badge-hot {
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  line-height: 0;
+}
+.badge-hot .hot-torch-icon { display: block; }
 .badge-advice { border: 1px solid transparent; }
 .badge-advice-buy {
   background: #ffe8e6;

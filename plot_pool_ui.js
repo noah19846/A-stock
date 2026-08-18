@@ -113,8 +113,10 @@ function sma(arr, n) {
             if (!params || !params.length) return '';
             const i = params[0].dataIndex;
             const b = bars[i];
-            const chg = b.open ? ((b.close - b.open) / b.open * 100).toFixed(2) : '0.00';
-            let html = `<b>${b.date}</b><br/>开 ${b.open} 高 ${b.high}<br/>低 ${b.low} 收 ${b.close} (${chg}%)` +
+            const prev = i > 0 ? bars[i - 1].close : null;
+            const chg = prev && prev !== 0 ? ((b.close - prev) / prev * 100) : null;
+            const chgTxt = chg == null ? '—' : ((chg >= 0 ? '+' : '') + chg.toFixed(2));
+            let html = `<b>${b.date}</b><br/>开 ${b.open} 高 ${b.high}<br/>低 ${b.low} 收 ${b.close} (${chgTxt}%)` +
               `<br/>成交额 ${b.amountYi.toFixed(4)}亿` +
               `<br/>成交量 ${b.volume.toLocaleString()}股 (${(b.volume / 1e8).toFixed(4)}亿)`;
             if (m.dif[i] != null) html += `<br/>DIF ${m.dif[i]}`;
@@ -287,6 +289,19 @@ function sma(arr, n) {
     const XUEQIU_ICON_SVG =
       '<img src="' + XUEQIU_ICON_IMG + '" width="14" height="14" alt="" draggable="false"/>';
 
+    /* 当日热门板块：红色火炬（无「热门」文案） */
+    const HOT_TORCH_SVG =
+      '<svg class="hot-torch-icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path fill="#c62828" d="M12 1.8c2.4 3.6.8 5.5-.6 7.2-1.4 1.7-2.4 2.9-2.4 4.8 0 2.1 1.5 3.6 3.5 4-.4-1.1-.2-2.1.5-3 .8-1.1 1.8-1.9 2.3-3.5.5-1.6.3-3.2-.6-4.8 2 1.7 3.1 4 3.1 6.4 0 4.6-3.3 7.8-7.2 7.8S3.8 17.5 3.8 12.9C3.8 8.4 7.5 4.6 12 1.8z"/>' +
+      '<path fill="#ef5350" d="M12.1 6.2c.6 1.2.2 2.1-.5 2.9-.6.7-1.2 1.3-1.2 2.4 0 1 .7 1.7 1.6 2-.2-.6 0-1.1.4-1.6.5-.8 1.2-1.2 1.5-2.2.3-.9.2-1.8-.3-2.8.8.9 1.3 1.9 1.3 3.1 0 2.5-1.7 4.2-3.8 4.2S7.6 14.5 7.6 12c0-2.3 1.9-4.3 4.5-5.8z"/>' +
+      '<path fill="#b71c1c" d="M10.4 18.2h3.2v2.2c0 .8-.6 1.4-1.4 1.4h-.4c-.8 0-1.4-.6-1.4-1.4v-2.2z"/>' +
+      '</svg>';
+
+    function hotTitle(s) {
+      const tier = s.hotTier ? String(s.hotTier) : '热门';
+      return '当日热门板块 · ' + tier + (s.industry ? ' · ' + s.industry : '');
+    }
+
     function xueqiuUrl(code) {
       const prefix = code.charAt(0) === '6' ? 'SH' : 'SZ';
       return 'https://xueqiu.com/S/' + prefix + code;
@@ -367,8 +382,12 @@ function sma(arr, n) {
 
     function badgesHtml(s) {
       let html = '<span class="badges">';
+      if (s.hotSector) {
+        html += '<span class="badge badge-hot" title="' + escapeHtml(hotTitle(s)) + '">' + HOT_TORCH_SVG + '</span>';
+      }
       if (s.industry)
-        html += '<span class="badge badge-industry">' + escapeHtml(s.industry) + '</span>';
+        html += '<span class="badge badge-industry' + (s.hotSector ? ' badge-industry-hot' : '') + '">' +
+          escapeHtml(s.industry) + '</span>';
       const adviceShow = displayAdvice(s);
       if (adviceShow)
         html += '<span class="badge badge-advice ' + adviceClass(s.advice || adviceShow) + '">' + escapeHtml(adviceShow) + '</span>';
@@ -572,9 +591,11 @@ function sma(arr, n) {
         rowMain.appendChild(a);
         if (s.industry) {
           const ind = document.createElement('span');
-          ind.className = 'nav-industry';
+          ind.className = s.hotSector ? 'nav-industry nav-industry-hot' : 'nav-industry';
           ind.textContent = s.industry;
-          ind.title = s.industry;
+          ind.title = s.hotSector
+            ? ('当日热门 · ' + (s.hotTier || '') + ' · ' + s.industry)
+            : s.industry;
           rowMain.appendChild(ind);
         }
         const xq = document.createElement('a');
@@ -602,6 +623,15 @@ function sma(arr, n) {
           tag.className = 'nav-watch';
           tag.textContent = watchLabel(s);
           rowTags.appendChild(tag);
+          hasTag = true;
+        }
+        if (s.hotSector) {
+          const hot = document.createElement('span');
+          hot.className = 'nav-hot';
+          hot.title = hotTitle(s);
+          hot.setAttribute('aria-label', hotTitle(s));
+          hot.innerHTML = HOT_TORCH_SVG;
+          rowTags.appendChild(hot);
           hasTag = true;
         }
         const strats = visibleStrategies(s);

@@ -297,7 +297,7 @@ def compute_forward(
                 "details": p.get("details") or "",
                 "rets": day_rets,
                 "cum": (cum - 1.0) if ok and cols else np.nan,
-                "missing": not bool(m),
+                "missing": False,  # 无次日涨跌仍列出当日选股
             }
         )
     return cols, rows_out, day_sums
@@ -348,33 +348,34 @@ def print_block(pick_date: str, block: dict) -> None:
             else "尚无次日涨跌"
         )
     )
-    if not rows or not cols:
+    if not rows:
         log("")
         return
     head = f"{'代码':<6} {'名称':<8} {'来源':<10}"
-    for d in cols:
-        head += f" {fmt_md(d):>7}"
-    head += f" {'累计':>7}"
+    if cols:
+        for d in cols:
+            head += f" {fmt_md(d):>7}"
+        head += f" {'累计':>7}"
     log(head)
     log("-" * len(head))
     for r in rows:
-        if r["missing"]:
-            continue
         line = f"{r['code']:<6} {str(r['name'])[:8]:<8} {str(r['sources'])[:10]:<10}"
-        for v in r["rets"]:
-            line += f" {fmt_pct(v):>7}" if np.isfinite(v) else f" {'—':>7}"
-        line += f" {fmt_pct(r['cum']):>7}"
+        if cols:
+            for v in r["rets"]:
+                line += f" {fmt_pct(v):>7}" if np.isfinite(v) else f" {'—':>7}"
+            line += f" {fmt_pct(r['cum']):>7}"
         log(line)
-    avg = f"{'等权':<6} {'日均':<8} {'':<10}"
-    cum = 1.0
-    for d in cols:
-        xs = day_sums[d]
-        v = float(np.mean(xs)) if xs else np.nan
-        avg += f" {fmt_pct(v):>7}"
-        if np.isfinite(v):
-            cum *= 1.0 + v
-    avg += f" {fmt_pct(cum - 1.0):>7}"
-    log(avg)
+    if cols:
+        avg = f"{'等权':<6} {'日均':<8} {'':<10}"
+        cum = 1.0
+        for d in cols:
+            xs = day_sums[d]
+            v = float(np.mean(xs)) if xs else np.nan
+            avg += f" {fmt_pct(v):>7}"
+            if np.isfinite(v):
+                cum *= 1.0 + v
+        avg += f" {fmt_pct(cum - 1.0):>7}"
+        log(avg)
     log("")
 
 
@@ -421,8 +422,7 @@ def section_codes(sec: dict) -> set[str]:
     codes: set[str] = set()
     for block in sec.get("blocks") or []:
         for r in block["rows"]:
-            if not r.get("missing"):
-                codes.add(r["code"])
+            codes.add(r["code"])
     return codes
 
 
@@ -447,23 +447,23 @@ def render_table_block(
     title = block["title"]
     meta = block["meta"]
 
-    if not rows or not cols:
+    if not rows:
         return (
             f'<div class="block">'
             f"<h3>{html.escape(title)} "
             f'<span class="muted">{html.escape(meta)}</span></h3>'
-            f'<p class="muted">无推荐或尚无次日涨跌数据</p></div>'
+            f'<p class="muted">无推荐</p></div>'
         )
 
-    thead = (
-        "<tr><th>代码</th><th>名称</th><th>来源</th>"
-        + "".join(f"<th>{html.escape(fmt_md(d))}</th>" for d in cols)
-        + "<th>累计</th></tr>"
-    )
+    date_heads = ""
+    if cols:
+        date_heads = (
+            "".join(f"<th>{html.escape(fmt_md(d))}</th>" for d in cols)
+            + "<th>累计</th>"
+        )
+    thead = f"<tr><th>代码</th><th>名称</th><th>来源</th>{date_heads}</tr>"
     tbody = []
     for r in rows:
-        if r["missing"]:
-            continue
         code = r["code"]
         is_both = code in both
         badge = (
@@ -478,28 +478,34 @@ def render_table_block(
             f'<td class="src" title="{html.escape(str(r["details"]))}">'
             f'{html.escape(str(r["sources"]))}</td>',
         ]
-        for v in r["rets"]:
-            cells.append(_pct_cell(v))
-        cells.append(_pct_cell(r["cum"]))
+        if cols:
+            for v in r["rets"]:
+                cells.append(_pct_cell(v))
+            cells.append(_pct_cell(r["cum"]))
         tbody.append(f"<tr{tr_cls}>" + "".join(cells) + "</tr>")
 
-    eq_cells = ['<td class="code">等权</td>', "<td>日均</td>", "<td></td>"]
-    cum = 1.0
-    for d in cols:
-        xs = day_sums[d]
-        v = float(np.mean(xs)) if xs else np.nan
-        eq_cells.append(_pct_cell(v))
-        if np.isfinite(v):
-            cum *= 1.0 + v
-    eq_cells.append(_pct_cell(cum - 1.0))
-    tbody.append('<tr class="eq">' + "".join(eq_cells) + "</tr>")
+    if cols:
+        eq_cells = ['<td class="code">等权</td>', "<td>日均</td>", "<td></td>"]
+        cum = 1.0
+        for d in cols:
+            xs = day_sums[d]
+            v = float(np.mean(xs)) if xs else np.nan
+            eq_cells.append(_pct_cell(v))
+            if np.isfinite(v):
+                cum *= 1.0 + v
+        eq_cells.append(_pct_cell(cum - 1.0))
+        tbody.append('<tr class="eq">' + "".join(eq_cells) + "</tr>")
+        sub = (
+            f'{html.escape(meta)} · 次日 {html.escape(fmt_md(cols[0]))}…'
+            f'{html.escape(fmt_md(cols[-1]))} ({len(cols)}日)'
+        )
+    else:
+        sub = f"{html.escape(meta)} · 尚无次日涨跌"
 
     return (
         f'<div class="block">'
         f"<h3>{html.escape(title)} "
-        f'<span class="muted">{html.escape(meta)} · '
-        f"次日 {html.escape(fmt_md(cols[0]))}…{html.escape(fmt_md(cols[-1]))} "
-        f"({len(cols)}日)</span></h3>"
+        f'<span class="muted">{sub}</span></h3>'
         f'<div class="wrap"><table>'
         f"<thead>{thead}</thead><tbody>{''.join(tbody)}</tbody>"
         f"</table></div></div>"
@@ -521,9 +527,7 @@ def render_panel(
         anchor = f"{id_prefix}-{pick_date}"
         both = both_by_date.get(pick_date, set())
         blocks = sec.get("blocks") or []
-        n = sum(
-            len([r for r in b["rows"] if not r.get("missing")]) for b in blocks
-        )
+        n = sum(len(b["rows"]) for b in blocks)
         n_both = len(both)
         # 导航用信号池等权累计（没有则热门）
         cum_eq = np.nan

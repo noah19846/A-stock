@@ -18,6 +18,7 @@
   .venv/bin/python run_daily_pool.py --treasure-only
   .venv/bin/python run_daily_pool.py --hot-only
   .venv/bin/python run_daily_pool.py --skip-update
+  .venv/bin/python run_daily_pool.py --rebuild-html
 """
 
 from __future__ import annotations
@@ -202,10 +203,48 @@ def should_skip_daily_update(mode: str) -> bool:
         return mx >= datetime.now().strftime("%Y-%m-%d")
 
 
+def load_hot_industries(asof: str, mode: str = "final") -> dict[str, str]:
+    """当日热门板块 industry → 档位（趋势热 / 超短反抽）。"""
+    base = HOT_ROOT / asof
+    if mode == "preview":
+        paths = [base / "preview" / "roles.json", base / "roles.json"]
+    else:
+        paths = [base / "roles.json", base / "preview" / "roles.json"]
+    path = next((p for p in paths if p.exists()), None)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for key, tier in (("trend", "趋势热"), ("burst", "超短反抽")):
+        for pack in data.get(key) or []:
+            if not isinstance(pack, dict):
+                continue
+            sector = pack.get("sector")
+            name = ""
+            if isinstance(sector, dict):
+                name = str(sector.get("industry") or "")
+            elif isinstance(sector, str):
+                name = sector
+            if name:
+                out[name] = tier
+    return out
+
+
+def hot_map_for_day_dir(day_dir: Path, asof: str | None) -> dict[str, str]:
+    if not asof:
+        return {}
+    mode = "preview" if day_dir.name == "preview" else "final"
+    return load_hot_industries(asof, mode)
+
+
 def stocks_from_df(
     df: pd.DataFrame,
     days: int = 180,
     asof: str | None = None,
+    hot_industries: dict[str, str] | None = None,
 ) -> list[dict]:
     """构建 HTML 列表：K 线静态数据嵌在条目里，页面只在点击时渲染图表。"""
     from plot_watch_pool import day_return_pct, load_qfq_bars
@@ -213,6 +252,7 @@ def stocks_from_df(
     if df.empty:
         return []
     cutoff = pd.Timestamp(asof) if asof else None
+    hot = hot_industries or {}
     stocks: list[dict] = []
     for _, row in df.iterrows():
         code = str(row["code"]).zfill(6)
@@ -258,6 +298,10 @@ def stocks_from_df(
             "floatYi": spot["float_yi"],
             "bars": bars,
         }
+        industry = item["industry"]
+        if industry and industry in hot:
+            item["hotSector"] = True
+            item["hotTier"] = hot[industry]
         if "score_entry" in row and pd.notna(row["score_entry"]):
             item["scoreEntry"] = float(row["score_entry"])
         if "score_setup" in row and pd.notna(row["score_setup"]):
@@ -279,6 +323,85 @@ def stocks_from_df(
             item["strategyIds"] = list(ids)
         stocks.append(item)
     return stocks
+
+
+def _read_pool_csv(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path, dtype={"code": str})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+    if df.empty or "code" not in df.columns:
+        return pd.DataFrame()
+    df["code"] = df["code"].astype(str).str.zfill(6)
+    return df
+
+
+def list_pool_html_jobs() -> list[tuple[str, str, Path]]:
+    """已有信号池 HTML：(asof, mode, day_dir)。"""
+    jobs: list[tuple[str, str, Path]] = []
+    if not POOL_ROOT.exists():
+        return jobs
+    for day in sorted(p for p in POOL_ROOT.iterdir() if p.is_dir()):
+        asof = day.name
+        if len(asof) != 10 or asof[4] != "-":
+            continue
+        if (day / "index.html").exists():
+            jobs.append((asof, "final", day))
+        prev = day / "preview"
+        if (prev / "index.html").exists():
+            jobs.append((asof, "preview", prev))
+    return jobs
+
+
+def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
+    """用已落盘的 signals.csv 重刷 K 线 HTML（不重跑筛选）。"""
+    from plot_watch_pool import build_html
+
+    def panel(name: str) -> list[dict]:
+        return stocks_from_df(
+            _read_pool_csv(day_dir / name / "signals.csv"),
+            asof=asof,
+            hot_industries=hot_map_for_day_dir(day_dir, asof),
+        )
+
+    long_stocks = panel("long")
+    short_stocks = panel("short")
+    scalp_stocks = panel("scalp")
+    treasure_stocks = panel("treasure")
+    out_html = day_dir / "index.html"
+    build_html(
+        asof,
+        [],
+        out_html,
+        days=180,
+        panels={
+            "long": long_stocks,
+            "short": short_stocks,
+            "scalp": scalp_stocks,
+            "treasure": treasure_stocks,
+        },
+    )
+    log(
+        f"  重刷 {asof} {day_dir.name if day_dir.name == 'preview' else 'final'}: "
+        f"long={len(long_stocks)} short={len(short_stocks)} "
+        f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} → {out_html}"
+    )
+
+
+def rebuild_all_pool_html() -> int:
+    jobs = list_pool_html_jobs()
+    if not jobs:
+        log("没有可重刷的 signal_pool HTML")
+        return 0
+    latest = max(asof for asof, _, _ in jobs)
+    log(f"预载日线 asof={latest} …")
+    preload_daily(asof=latest)
+    log(f"重刷 K 线 HTML {len(jobs)} 份")
+    for asof, mode, day_dir in jobs:
+        rebuild_html_from_csvs(day_dir, asof)
+    return len(jobs)
 
 
 def load_short_registry() -> dict:
@@ -322,7 +445,9 @@ def run_treasure(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dic
     else:
         df_out = df
     df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
-    stocks = stocks_from_df(df_out, asof=asof)
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
     n_watch = int((df_out["stage"] == "宝藏观察").sum()) if not df_out.empty else 0
     log(
         f"  treasure: 共 {len(df_out)} 条（宝藏观察 {n_watch}）"
@@ -361,7 +486,9 @@ def run_long(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
         pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
 
     df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
-    stocks = stocks_from_df(df_out, asof=asof)
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
     n_buy = int((df_out["stage"] == "可买入").sum()) if not df_out.empty else 0
     n_watch = int((df_out["stage"] == "观察埋伏").sum()) if not df_out.empty else 0
     n_hot = int((df_out["stage"] == "已偏强").sum()) if not df_out.empty else 0
@@ -669,7 +796,9 @@ def run_short(
         pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
     df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
 
-    stocks = stocks_from_df(df_out, asof=asof)
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
     n_buy = int((df_out["stage"] == "可短打").sum()) if not df_out.empty else 0
     n_watch = int((df_out["stage"] == "观察").sum()) if not df_out.empty else 0
     log(
@@ -694,7 +823,9 @@ def run_short(
         else:
             pd.DataFrame().to_csv(scalp_dir / "now.csv", index=False, encoding="utf-8-sig")
         scalp_df.to_csv(scalp_dir / "signals.csv", index=False, encoding="utf-8-sig")
-        scalp_stocks = stocks_from_df(scalp_df, asof=asof)
+        scalp_stocks = stocks_from_df(
+            scalp_df, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+        )
         sb = int((scalp_df["stage"] == "可短打").sum()) if not scalp_df.empty else 0
         sw = int((scalp_df["stage"] == "观察").sum()) if not scalp_df.empty else 0
         log(
@@ -875,6 +1006,12 @@ def run_one_day(
     treasure_stocks: list[dict] = []
     scalp_stocks: list[dict] = []
 
+    # 先写热门 roles.json，信号池 HTML 才能打「热门」标
+    if do_hot:
+        hot_stat = run_hot_sectors(asof, mode=mode)
+    else:
+        log("[3b/4] 跳过热门板块")
+
     if do_long:
         long_stat, long_stocks = run_long(day_dir, asof=asof)
     else:
@@ -918,11 +1055,6 @@ def run_one_day(
             day_dir, asof, mode, long_stat, short_stat, treasure_stat, scalp_stat=scalp_stat
         )
 
-    if do_hot:
-        hot_stat = run_hot_sectors(asof, mode=mode)
-    else:
-        log("[3b/4] 跳过热门板块")
-
     return long_stat, short_stat, treasure_stat, scalp_stat, hot_stat
 
 
@@ -930,6 +1062,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="日更 + 长/短线信号池 → signal_pool")
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--skip-update", action="store_true")
+    parser.add_argument(
+        "--rebuild-html",
+        action="store_true",
+        help="用已有 signals.csv 重刷全部 signal_pool K 线 HTML（不更新日线、不重筛）",
+    )
     parser.add_argument(
         "--force-update",
         action="store_true",
@@ -971,6 +1108,11 @@ def main() -> None:
     args = parser.parse_args()
 
     t0 = time.time()
+    if args.rebuild_html:
+        n = rebuild_all_pool_html()
+        log(f"完成，重刷 {n} 份 HTML，耗时 {time.time() - t0:.0f}s")
+        return
+
     mode = "preview" if args.preview else "final"
 
     do_long = True
