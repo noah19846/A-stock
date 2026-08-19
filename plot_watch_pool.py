@@ -166,7 +166,7 @@ __CSS__
   </div>
   <script>
     __DATA_JS__
-    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', scalp: '🎯 Scalp', treasure: '💎 宝藏观察' };
+    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '🟥 无量首板' };
     let currentTab = 'long';
     let charts = [];
 __CHART_JS__
@@ -472,6 +472,25 @@ main {
   color: #0d7a5f;
   border-color: #a8e6d5;
 }
+.badge-strategy-dry_stable,
+.badge-strategy-double_trough {
+  background: #fff6e0;
+  color: #b36b00;
+  border-color: #ffe0a3;
+}
+.badge-strategy-expand_after_dry,
+.badge-strategy-consol_vol_up {
+  background: #e8f1ff;
+  color: #0b57d0;
+  border-color: #b6d0fe;
+}
+.badge-strategy-quiet_limit_up,
+.badge-strategy-low_limit_up,
+.badge-strategy-quiet_first {
+  background: #ffe8e6;
+  color: #c62828;
+  border-color: #ffc1bc;
+}
 .nav-strategy {
   display: inline-flex;
   align-items: center;
@@ -486,6 +505,9 @@ main {
 .nav-strategy-strict { background: #e8f1ff; color: #0b57d0; border: 1px solid #b6d0fe; }
 .nav-strategy-r3 { background: #f3eef8; color: #6a1b9a; border: 1px solid #d7bff0; }
 .nav-strategy-scalp { background: #e8faf4; color: #0d7a5f; border: 1px solid #a8e6d5; }
+.nav-strategy-dry_stable, .nav-strategy-double_trough { background: #fff6e0; color: #b36b00; border: 1px solid #ffe0a3; }
+.nav-strategy-expand_after_dry, .nav-strategy-consol_vol_up { background: #e8f1ff; color: #0b57d0; border: 1px solid #b6d0fe; }
+.nav-strategy-quiet_limit_up, .nav-strategy-low_limit_up, .nav-strategy-quiet_first { background: #ffe8e6; color: #c62828; border: 1px solid #ffc1bc; }
 
 .cond-tip {
   color: var(--muted);
@@ -669,6 +691,7 @@ def build_html(
       <button type="button" class="tab-btn" data-tab="short">⚡ 短线 <span id="n-short">0</span></button>
       <button type="button" class="tab-btn" data-tab="scalp">🎯 Scalp <span id="n-scalp">0</span></button>
       <button type="button" class="tab-btn" data-tab="treasure">💎 宝藏观察 <span id="n-treasure">0</span></button>
+      <button type="button" class="tab-btn" data-tab="board">🟥 无量首板 <span id="n-board">0</span></button>
     </div>"""
         sub = (
             f'<span id="tab-label">📈 中长线</span> · 共 <span id="count">0</span> 只'

@@ -357,6 +357,9 @@ function sma(arr, n) {
       if (k === 'strict') return 'badge-strategy-strict';
       if (k === 'r3') return 'badge-strategy-r3';
       if (k === 'scalp') return 'badge-strategy-scalp';
+      if (k === 'dry_stable' || k === 'double_trough') return 'badge-strategy-' + k;
+      if (k === 'expand_after_dry' || k === 'consol_vol_up') return 'badge-strategy-' + k;
+      if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'badge-strategy-' + k;
       return 'badge-strategy-default';
     }
     function navStrategyClass(id) {
@@ -364,6 +367,9 @@ function sma(arr, n) {
       if (k === 'strict') return 'nav-strategy nav-strategy-strict';
       if (k === 'r3') return 'nav-strategy nav-strategy-r3';
       if (k === 'scalp') return 'nav-strategy nav-strategy-scalp';
+      if (k === 'dry_stable' || k === 'double_trough') return 'nav-strategy nav-strategy-' + k;
+      if (k === 'expand_after_dry' || k === 'consol_vol_up') return 'nav-strategy nav-strategy-' + k;
+      if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'nav-strategy nav-strategy-' + k;
       return 'nav-strategy nav-strategy-default';
     }
     /** 展示用策略标签：隐藏「默认」 */
@@ -463,6 +469,7 @@ function sma(arr, n) {
     }
     function buyLabel(s) {
       const a = s.advice || '';
+      if (typeof currentTab !== 'undefined' && currentTab === 'board') return '续板';
       if (a.indexOf('可短打') >= 0) return '买入';
       if (a.indexOf('可买入') >= 0) return '可买';
       return '买入';
@@ -473,7 +480,7 @@ function sma(arr, n) {
       return '观察';
     }
     const chartInstances = {};
-    const panelBuilt = { long: false, short: false, treasure: false };
+    const panelBuilt = { long: false, short: false, treasure: false, board: false };
     let panesReady = false;
 
     function disposeCharts() {
@@ -507,10 +514,12 @@ function sma(arr, n) {
         const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
         const np = document.getElementById('n-scalp');
+        const nb = document.getElementById('n-board');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
         if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
+        if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
       }
     }
     function ensureTabPanes() {
@@ -521,12 +530,14 @@ function sma(arr, n) {
         '<div id="nav-long" class="tab-pane"></div>' +
         '<div id="nav-short" class="tab-pane" hidden></div>' +
         '<div id="nav-scalp" class="tab-pane" hidden></div>' +
-        '<div id="nav-treasure" class="tab-pane" hidden></div>';
+        '<div id="nav-treasure" class="tab-pane" hidden></div>' +
+        '<div id="nav-board" class="tab-pane" hidden></div>';
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
         '<div id="main-short" class="tab-pane" hidden></div>' +
         '<div id="main-scalp" class="tab-pane" hidden></div>' +
-        '<div id="main-treasure" class="tab-pane" hidden></div>';
+        '<div id="main-treasure" class="tab-pane" hidden></div>' +
+        '<div id="main-board" class="tab-pane" hidden></div>';
       panesReady = true;
     }
     function resizeTabCharts(tab) {
@@ -543,7 +554,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short', 'scalp', 'treasure'].forEach(t => {
+      ['long', 'short', 'scalp', 'treasure', 'board'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);
@@ -676,9 +687,13 @@ function sma(arr, n) {
         const nl = document.getElementById('n-long');
         const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
+        const np = document.getElementById('n-scalp');
+        const nb = document.getElementById('n-board');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+        if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
+        if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
         showTab(currentTab);
         return;
       }

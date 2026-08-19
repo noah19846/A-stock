@@ -74,6 +74,11 @@ data/rally_exit_*
 data/treasure_double_*
 data/treasure_signals.csv
 !data/treasure_bands.json
+data/volume_buy_signals.csv
+data/volume_buy_scan.json
+data/quiet_limit_signals.csv
+data/quiet_limit_backtest.json
+data/quiet_limit_hold_horizon.json
 
 # Keep curated strategy configs (bands / registry / setup / exit)
 !data/short_burst_feature_bands.json

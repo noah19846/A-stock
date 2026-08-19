@@ -1,9 +1,11 @@
 """
 信号池 / 热门推荐 → 次日起逐日涨跌幅（HTML）
 
-每个选股日两张独立表：
-  1) signal_pool：短线可短打 + 长线可买入（同票去重）
-  2) hot_sectors：可买 / 轻仓可买
+每个选股日四张独立表（页内 tab）：
+  1) 短线可短打
+  2) 长线可买入
+  3) 无量首板续板候选
+  4) 热门可买 / 轻仓可买
 
 选出日 T 的名单，打印 T 之后每个交易日的涨跌幅，直到日线最新。
 默认从最早有信号池的日期起，按选股日分段生成一张 HTML。
@@ -208,12 +210,27 @@ def _dedupe_picks(parts: list[pd.DataFrame], rank: dict[str, int]) -> pd.DataFra
     return out.sort_values(["_k", "code"]).drop(columns=["_k"]).reset_index(drop=True)
 
 
-def load_pool_picks(pick_date: str, preview: bool) -> pd.DataFrame:
-    """signal_pool：短线可短打 + 长线可买入（与热门分开）。"""
-    return _dedupe_picks(
-        [load_short_buys(pick_date, preview), load_long_buys(pick_date, preview)],
-        {"短线": 0, "长线": 1},
-    )
+def load_board_buys(pick_date: str, preview: bool) -> pd.DataFrame:
+    d = pool_day_dir(pick_date, preview)
+    if d is None:
+        return pd.DataFrame()
+    df = _read_signal_csv(d / "board" / "signals.csv")
+    if df.empty:
+        return df
+    if "can_buy" in df.columns:
+        out = df[df["can_buy"].astype(str).str.lower().isin(["true", "1"])]
+    else:
+        out = df[df["stage"].astype(str) == "可买入"]
+    out = out.copy()
+    out["source"] = "无量首板"
+    tags = out["strategy_tags"] if "strategy_tags" in out.columns else out["stage"]
+    out["src_detail"] = tags.astype(str)
+    return out[["code", "name", "source", "src_detail"]]
+
+
+def as_picks(raw: pd.DataFrame, source: str) -> pd.DataFrame:
+    """单来源名单 → compute_forward 用的 code/name/sources/details。"""
+    return _dedupe_picks([raw], {source: 0})
 
 
 def load_hot_picks(pick_date: str, preview: bool) -> pd.DataFrame:
@@ -418,23 +435,25 @@ def name_link(code: str, name: str) -> str:
     )
 
 
-def section_codes(sec: dict) -> set[str]:
-    codes: set[str] = set()
-    for block in sec.get("blocks") or []:
-        for r in block["rows"]:
-            codes.add(r["code"])
-    return codes
+def block_codes(block: dict) -> set[str]:
+    return {r["code"] for r in block.get("rows") or []}
 
 
 def both_codes_by_date(
     final_sections: list[dict], preview_sections: list[dict]
-) -> dict[str, set[str]]:
-    """选股日 → preview∩final 的代码集合（信号池+热门合计）。"""
-    prev_map = {s["pick_date"]: section_codes(s) for s in preview_sections}
-    out: dict[str, set[str]] = {}
+) -> dict[str, dict[str, set[str]]]:
+    """选股日 → 来源 key → preview∩final 的代码。"""
+    prev_map: dict[str, dict[str, set[str]]] = {}
+    for s in preview_sections:
+        prev_map[s["pick_date"]] = {b["key"]: block_codes(b) for b in s.get("blocks") or []}
+    out: dict[str, dict[str, set[str]]] = {}
     for s in final_sections:
         d = s["pick_date"]
-        out[d] = section_codes(s) & prev_map.get(d, set())
+        prev = prev_map.get(d, {})
+        out[d] = {
+            b["key"]: block_codes(b) & prev.get(b["key"], set())
+            for b in s.get("blocks") or []
+        }
     return out
 
 
@@ -444,15 +463,12 @@ def render_table_block(
     cols: list[pd.Timestamp] = block["cols"]
     rows: list[dict] = block["rows"]
     day_sums = block["day_sums"]
-    title = block["title"]
     meta = block["meta"]
 
     if not rows:
         return (
             f'<div class="block">'
-            f"<h3>{html.escape(title)} "
-            f'<span class="muted">{html.escape(meta)}</span></h3>'
-            f'<p class="muted">无推荐</p></div>'
+            f'<p class="muted">{html.escape(meta)} · 无推荐</p></div>'
         )
 
     date_heads = ""
@@ -461,7 +477,7 @@ def render_table_block(
             "".join(f"<th>{html.escape(fmt_md(d))}</th>" for d in cols)
             + "<th>累计</th>"
         )
-    thead = f"<tr><th>代码</th><th>名称</th><th>来源</th>{date_heads}</tr>"
+    thead = f"<tr><th>代码</th><th>名称</th><th>说明</th>{date_heads}</tr>"
     tbody = []
     for r in rows:
         code = r["code"]
@@ -476,7 +492,7 @@ def render_table_block(
             f'<td class="code">{html.escape(code)}</td>',
             f"<td>{name_link(code, str(r['name']))}{badge}</td>",
             f'<td class="src" title="{html.escape(str(r["details"]))}">'
-            f'{html.escape(str(r["sources"]))}</td>',
+            f'{html.escape(str(r["details"] or r["sources"]))}</td>',
         ]
         if cols:
             for v in r["rets"]:
@@ -504,8 +520,7 @@ def render_table_block(
 
     return (
         f'<div class="block">'
-        f"<h3>{html.escape(title)} "
-        f'<span class="muted">{sub}</span></h3>'
+        f'<p class="muted">{sub}</p>'
         f'<div class="wrap"><table>'
         f"<thead>{thead}</thead><tbody>{''.join(tbody)}</tbody>"
         f"</table></div></div>"
@@ -516,7 +531,7 @@ def render_panel(
     sections: list[dict],
     *,
     id_prefix: str,
-    both_by_date: dict[str, set[str]] | None = None,
+    both_by_date: dict[str, dict[str, set[str]]] | None = None,
 ) -> tuple[str, str]:
     """返回 (侧栏导航 HTML, 主区 HTML)。"""
     both_by_date = both_by_date or {}
@@ -525,38 +540,49 @@ def render_panel(
     for sec in sections:
         pick_date = sec["pick_date"]
         anchor = f"{id_prefix}-{pick_date}"
-        both = both_by_date.get(pick_date, set())
+        both_map = both_by_date.get(pick_date, {})
         blocks = sec.get("blocks") or []
-        n = sum(len(b["rows"]) for b in blocks)
-        n_both = len(both)
-        # 导航用信号池等权累计（没有则热门）
-        cum_eq = np.nan
-        for b in blocks:
-            if b["key"] == "pool" and np.isfinite(b.get("eq_cum", np.nan)):
-                cum_eq = b["eq_cum"]
-                break
-        if not np.isfinite(cum_eq):
-            for b in blocks:
-                if np.isfinite(b.get("eq_cum", np.nan)):
-                    cum_eq = b["eq_cum"]
-                    break
-        cum_s = fmt_pct(cum_eq) if np.isfinite(cum_eq) else "—"
+        counts = {b["key"]: len(b["rows"]) for b in blocks}
+        n_both = len(set().union(*both_map.values())) if both_map else 0
+        n_s = counts.get("short", 0)
+        n_l = counts.get("long", 0)
+        n_b = counts.get("board", 0)
+        n_h = counts.get("hot", 0)
         both_nav = f" · 双{n_both}" if n_both else ""
         nav.append(
             f'<a href="#{anchor}">{html.escape(pick_date)} '
-            f'<span class="muted">{n}只{html.escape(both_nav)} '
-            f"{html.escape(cum_s)}</span></a>"
+            f'<span class="muted">短{n_s} 长{n_l} 板{n_b} 热{n_h}'
+            f"{html.escape(both_nav)}</span></a>"
         )
 
         both_note = f" · 双出 {n_both}只" if n_both else ""
-        parts = [render_table_block(b, both) for b in blocks]
-        if not parts:
-            parts = ['<p class="muted">无推荐、无 preview，或尚无次日涨跌数据</p>']
+        tab_btns = []
+        panes = []
+        for i, b in enumerate(blocks):
+            key = b["key"]
+            n = len(b["rows"])
+            cls = "active" if i == 0 else ""
+            tab_btns.append(
+                f'<button type="button" class="{cls}" data-src="{html.escape(key)}">'
+                f'{html.escape(b["title"])} <span class="muted">{n}</span></button>'
+            )
+            pane_cls = "src-pane active" if i == 0 else "src-pane"
+            panes.append(
+                f'<div class="{pane_cls}" data-src="{html.escape(key)}">'
+                f"{render_table_block(b, both_map.get(key, set()))}</div>"
+            )
+        if not panes:
+            inner = '<p class="muted">无推荐、无 preview，或尚无次日涨跌数据</p>'
+        else:
+            inner = (
+                f'<div class="src-tabs" role="tablist">{"".join(tab_btns)}</div>'
+                f'<div class="src-panes">{"".join(panes)}</div>'
+            )
         body.append(
             f'<section id="{anchor}" class="day">'
             f"<h2>{html.escape(pick_date)}"
             f'<span class="muted">{html.escape(both_note)}</span></h2>'
-            f"{''.join(parts)}</section>"
+            f"{inner}</section>"
         )
     return "".join(nav), "".join(body)
 
@@ -643,10 +669,23 @@ main {{ flex: 1; padding: 20px 24px 48px; min-width: 0; }}
 }}
 .day h2 {{ font-size: 16px; margin: 0 0 10px; font-weight: 600; }}
 .day h2 .muted {{ font-weight: 400; font-size: 13px; color: var(--muted); }}
-.block {{ margin-top: 14px; }}
-.block:first-of-type {{ margin-top: 4px; }}
-.block h3 {{ font-size: 14px; margin: 0 0 8px; font-weight: 600; }}
-.block h3 .muted {{ font-weight: 400; font-size: 12px; color: var(--muted); }}
+.src-tabs {{
+  display: flex; gap: 4px; margin: 0 0 10px; flex-wrap: wrap;
+  background: #e8ebf0; padding: 3px; border-radius: 8px;
+}}
+.src-tabs button {{
+  flex: 1; min-width: 88px; border: 0; background: transparent; color: var(--muted);
+  padding: 7px 8px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  font-family: inherit;
+}}
+.src-tabs button.active {{
+  background: #fff; color: var(--text); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,.06);
+}}
+.src-pane {{ display: none; }}
+.src-pane.active {{ display: block; }}
+.block {{ margin-top: 0; }}
+.block p.muted {{ font-size: 12px; margin: 0 0 8px; }}
 .wrap {{ overflow-x: auto; }}
 table {{ border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }}
 th, td {{ padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }}
@@ -681,7 +720,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   <nav class="nav">
     <h1>选股次日涨跌</h1>
     <div class="sub">{html.escape(start)} → {html.escape(end)}<br/>
-    每日两表：信号池(短+长) / 热门(可买·轻仓可买)<br/>
+    每日四表：短线 / 长线 / 无量首板 / 热门<br/>
     <span class="badge-both">双</span> = Preview 与正式均入选 · 名称点进雪球<br/>
     生成 {html.escape(generated_at)}</div>
     <div class="tabs" role="tablist">
@@ -698,7 +737,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
 </div>
 <script>
 (function () {{
-  const buttons = document.querySelectorAll('.tabs button');
+  const buttons = document.querySelectorAll('.nav .tabs button');
   function activate(tab) {{
     buttons.forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.getElementById('panel-final').classList.toggle('active', tab === 'final');
@@ -711,6 +750,22 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   let tab = 'final';
   try {{ tab = localStorage.getItem('fwd-ret-tab') || 'final'; }} catch (e) {{}}
   if (tab === 'preview' || tab === 'final') activate(tab);
+
+  function activateSrc(src) {{
+    document.querySelectorAll('.src-tabs button').forEach(b => {{
+      b.classList.toggle('active', b.dataset.src === src);
+    }});
+    document.querySelectorAll('.src-pane').forEach(p => {{
+      p.classList.toggle('active', p.dataset.src === src);
+    }});
+    try {{ localStorage.setItem('fwd-ret-src', src); }} catch (e) {{}}
+  }}
+  document.querySelectorAll('.src-tabs button').forEach(b => {{
+    b.addEventListener('click', () => activateSrc(b.dataset.src));
+  }});
+  let src = 'short';
+  try {{ src = localStorage.getItem('fwd-ret-src') || 'short'; }} catch (e) {{}}
+  if (['short', 'long', 'board', 'hot'].indexOf(src) >= 0) activateSrc(src);
 }})();
 </script>
 </body>
@@ -723,18 +778,20 @@ def build_sections(
 ) -> list[dict]:
     sections = []
     for pick_date in dates:
-        pool = load_pool_picks(pick_date, preview)
+        short = as_picks(load_short_buys(pick_date, preview), "短线")
+        long = as_picks(load_long_buys(pick_date, preview), "长线")
+        board = as_picks(load_board_buys(pick_date, preview), "无量首板")
         hot = load_hot_picks(pick_date, preview)
-        n_s = int(sum("短线" in s for s in pool["sources"])) if len(pool) else 0
-        n_l = int(sum("长线" in s for s in pool["sources"])) if len(pool) else 0
         blocks = [
+            make_block("short", "短线", short, pick_date, asof, f"可短打 {len(short)}"),
+            make_block("long", "长线", long, pick_date, asof, f"可买入 {len(long)}"),
             make_block(
-                "pool",
-                "信号池",
-                pool,
+                "board",
+                "无量首板",
+                board,
                 pick_date,
                 asof,
-                f"短{n_s}+长{n_l} → 去重{len(pool)}",
+                f"续板候选 {len(board)}",
             ),
             make_block(
                 "hot",
