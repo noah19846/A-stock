@@ -5,6 +5,7 @@
 - 否则：多进程并行读 CSV
 - 一次性算好后复权/均线；只保留近 MAX_BARS 根
 - get(code, asof=...) 内存切片，不再读盘
+- set_preview_overlay(date)：用已存盘中截面替换当日 bar，供新策略回放
 - 同日预载结果可落盘 data/db/preload_cache.pkl，二次启动秒级命中
 """
 
@@ -44,6 +45,12 @@ _PRELOADED = False
 _SOURCE: str = ""  # "sqlite" | "csv" | ""
 _CACHE_KEY: str = ""
 
+# 回放盘中截面：get(asof=截面日) 时用 preview_bars 替换当日 bar
+_PREVIEW_DATE: str | None = None
+_PREVIEW_AT: str | None = None
+_PREVIEW_BARS: dict[str, dict] | None = None
+_PREVIEW_PATCHED: dict[str, pd.DataFrame | None] = {}
+
 
 def clear() -> None:
     global _PRELOADED, _SOURCE, _CACHE_KEY
@@ -51,6 +58,7 @@ def clear() -> None:
     _PRELOADED = False
     _SOURCE = ""
     _CACHE_KEY = ""
+    set_preview_overlay(None)
 
 
 def use_sqlite() -> bool:
@@ -148,6 +156,114 @@ def _prepare_en(g: pd.DataFrame) -> pd.DataFrame | None:
             "ma60": _rolling_mean(px, 60),
         }
     )
+
+
+def set_preview_overlay(trade_date: str | None) -> dict | None:
+    """筛选回放：指定交易日用已存 preview 截面替换当日 OHLC。None 关闭。"""
+    global _PREVIEW_DATE, _PREVIEW_AT, _PREVIEW_BARS
+    _PREVIEW_PATCHED.clear()
+    if not trade_date:
+        _PREVIEW_DATE = None
+        _PREVIEW_AT = None
+        _PREVIEW_BARS = None
+        return None
+    import daily_db
+
+    meta = daily_db.get_preview_snapshot(trade_date)
+    if not meta:
+        _PREVIEW_DATE = None
+        _PREVIEW_AT = None
+        _PREVIEW_BARS = None
+        return None
+    df = daily_db.load_preview_bars(trade_date)
+    bars: dict[str, dict] = {}
+    if not df.empty:
+        for rec in df.to_dict("records"):
+            code = str(rec["code"]).zfill(6)
+            bars[code] = rec
+    _PREVIEW_DATE = str(meta["trade_date"])[:10]
+    _PREVIEW_AT = str(meta["snapshot_at"])
+    _PREVIEW_BARS = bars
+    return {**meta, "n_loaded": len(bars)}
+
+
+def preview_overlay_info() -> dict | None:
+    if not _PREVIEW_DATE:
+        return None
+    return {
+        "trade_date": _PREVIEW_DATE,
+        "snapshot_at": _PREVIEW_AT,
+        "n_bars": len(_PREVIEW_BARS or {}),
+    }
+
+
+def _apply_preview_bar(df: pd.DataFrame, code: str) -> pd.DataFrame | None:
+    """把 asof 日换成 preview 截面；该票无截面则去掉当日（避免漏用收盘价）。"""
+    assert _PREVIEW_DATE
+    cutoff = pd.Timestamp(_PREVIEW_DATE)
+    out = df.loc[df["日期"] <= cutoff].copy()
+    bar = (_PREVIEW_BARS or {}).get(code)
+    if bar is None:
+        out = out.loc[out["日期"] < cutoff].reset_index(drop=True)
+        return _recompute_derived(out)
+    mask = pd.to_datetime(out["日期"]).dt.normalize() == cutoff.normalize()
+    row = {
+        "开盘": float(bar["open"]),
+        "最高": float(bar["high"]),
+        "最低": float(bar["low"]),
+        "收盘": float(bar["close"]),
+        "成交量": float(bar["volume"]),
+        "成交额": float(bar["amount"]),
+        "流通股本": float(bar["float_shares"]),
+        "换手率": float(bar["turnover"]),
+        "后复权因子": float(bar["hfq_factor"]),
+    }
+    if mask.any():
+        idx = out.index[mask][-1]
+        for k, v in row.items():
+            out.at[idx, k] = v
+    else:
+        new = {c: out.iloc[-1][c] if c in out.columns else None for c in out.columns}
+        new["日期"] = cutoff
+        new.update(row)
+        out = pd.concat([out, pd.DataFrame([new])], ignore_index=True)
+    return _recompute_derived(out.reset_index(drop=True))
+
+
+def _recompute_derived(df: pd.DataFrame) -> pd.DataFrame | None:
+    """OHLC 改过之后重算 px / 均线（输入已是缓存列）。"""
+    if df is None or len(df) < 80:
+        return None
+    g = df
+    n = len(g)
+    o = g["开盘"].to_numpy(dtype=np.float64, copy=False)
+    h = g["最高"].to_numpy(dtype=np.float64, copy=False)
+    low = g["最低"].to_numpy(dtype=np.float64, copy=False)
+    c = g["收盘"].to_numpy(dtype=np.float64, copy=False)
+    vol = g["成交量"].to_numpy(dtype=np.float64, copy=False)
+    amt = g["成交额"].to_numpy(dtype=np.float64, copy=False)
+    fs = g["流通股本"].to_numpy(dtype=np.float64, copy=False)
+    turn = g["换手率"].to_numpy(dtype=np.float64, copy=False)
+    f = g["后复权因子"].to_numpy(dtype=np.float64, copy=False)
+    px = c * f
+    ret = np.empty(n, dtype=np.float64)
+    ret[0] = np.nan
+    ret[1:] = px[1:] / px[:-1] - 1.0
+    out = g.copy()
+    out["px"] = px
+    out["op"] = o * f
+    out["hi"] = h * f
+    out["lo"] = low * f
+    out["amt"] = amt
+    out["vol"] = vol
+    out["turn"] = turn * 100.0
+    out["mv"] = fs * c / 1e8
+    out["ret"] = ret
+    out["ma5"] = _rolling_mean(px, 5)
+    out["ma10"] = _rolling_mean(px, 10)
+    out["ma20"] = _rolling_mean(px, 20)
+    out["ma60"] = _rolling_mean(px, 60)
+    return out
 
 
 def _disk_cache_key() -> str:
@@ -344,6 +460,12 @@ def get(code: str, asof: str | None = None) -> pd.DataFrame | None:
     df = _CACHE.get(code)
     if df is None:
         return None
+    if asof and _PREVIEW_DATE and str(asof)[:10] == _PREVIEW_DATE:
+        if code in _PREVIEW_PATCHED:
+            return _PREVIEW_PATCHED[code]
+        patched = _apply_preview_bar(df, code)
+        _PREVIEW_PATCHED[code] = patched
+        return patched
     if asof:
         cutoff = pd.Timestamp(asof)
         last = df["日期"].iloc[-1]

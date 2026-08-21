@@ -70,6 +70,30 @@ CREATE INDEX IF NOT EXISTS idx_daily_bars_code_date
   ON daily_bars(code, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_bars_date
   ON daily_bars(trade_date);
+
+-- 每个交易日一份盘中截面（后一次 preview 覆盖前一次）
+CREATE TABLE IF NOT EXISTS preview_snapshots (
+  trade_date  TEXT PRIMARY KEY,
+  snapshot_at TEXT NOT NULL,
+  n_bars      INTEGER NOT NULL,
+  source      TEXT
+);
+CREATE TABLE IF NOT EXISTS preview_bars (
+  code         TEXT NOT NULL,
+  trade_date   TEXT NOT NULL,
+  open         REAL,
+  high         REAL,
+  low          REAL,
+  close        REAL,
+  volume       REAL,
+  amount       REAL,
+  float_shares REAL,
+  turnover     REAL,
+  hfq_factor   REAL,
+  PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_preview_bars_date
+  ON preview_bars(trade_date);
 """
 
 
@@ -144,6 +168,140 @@ def upsert_bars(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     if not rows:
         return
     conn.executemany(UPSERT_SQL, rows)
+
+
+def save_preview_snapshot(
+    trade_date: str,
+    *,
+    snapshot_at: str | None = None,
+    source: str = "preview",
+    db_path: Path | None = None,
+) -> dict:
+    """把 daily_bars 里该日整段复制到 preview_bars（每日一份，后写覆盖）。"""
+    from datetime import datetime
+
+    day = str(trade_date)[:10]
+    at = snapshot_at or datetime.now().isoformat(timespec="seconds")
+    conn = init_db(connect(db_path))
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM daily_bars WHERE trade_date=?", (day,)
+        ).fetchone()[0]
+        if int(n) <= 0:
+            return {
+                "trade_date": day,
+                "snapshot_at": at,
+                "n_bars": 0,
+                "source": source,
+                "ok": False,
+                "error": "daily_bars 无该日数据",
+            }
+        conn.execute("DELETE FROM preview_bars WHERE trade_date=?", (day,))
+        conn.execute(
+            """
+            INSERT INTO preview_bars(
+              code, trade_date, open, high, low, close,
+              volume, amount, float_shares, turnover, hfq_factor
+            )
+            SELECT code, trade_date, open, high, low, close,
+                   volume, amount, float_shares, turnover, hfq_factor
+            FROM daily_bars
+            WHERE trade_date=?
+            """,
+            (day,),
+        )
+        conn.execute(
+            """
+            INSERT INTO preview_snapshots(trade_date, snapshot_at, n_bars, source)
+            VALUES (?,?,?,?)
+            ON CONFLICT(trade_date) DO UPDATE SET
+              snapshot_at=excluded.snapshot_at,
+              n_bars=excluded.n_bars,
+              source=excluded.source
+            """,
+            (day, at, int(n), source),
+        )
+        conn.commit()
+        return {
+            "trade_date": day,
+            "snapshot_at": at,
+            "n_bars": int(n),
+            "source": source,
+            "ok": True,
+        }
+    finally:
+        conn.close()
+
+
+def get_preview_snapshot(trade_date: str, db_path: Path | None = None) -> dict | None:
+    day = str(trade_date)[:10]
+    if not db_exists(db_path):
+        return None
+    conn = init_db(connect(db_path))
+    try:
+        row = conn.execute(
+            """
+            SELECT trade_date, snapshot_at, n_bars, source
+            FROM preview_snapshots WHERE trade_date=?
+            """,
+            (day,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "trade_date": str(row[0])[:10],
+            "snapshot_at": str(row[1]),
+            "n_bars": int(row[2] or 0),
+            "source": str(row[3] or ""),
+        }
+    finally:
+        conn.close()
+
+
+def list_preview_snapshots(db_path: Path | None = None) -> list[dict]:
+    if not db_exists(db_path):
+        return []
+    conn = init_db(connect(db_path))
+    try:
+        rows = conn.execute(
+            """
+            SELECT trade_date, snapshot_at, n_bars, source
+            FROM preview_snapshots
+            ORDER BY trade_date
+            """
+        ).fetchall()
+        return [
+            {
+                "trade_date": str(r[0])[:10],
+                "snapshot_at": str(r[1]),
+                "n_bars": int(r[2] or 0),
+                "source": str(r[3] or ""),
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def load_preview_bars(trade_date: str, db_path: Path | None = None) -> pd.DataFrame:
+    """英文列；该日盘中截面。空则 empty。"""
+    day = str(trade_date)[:10]
+    if not db_exists(db_path):
+        return pd.DataFrame()
+    conn = init_db(connect(db_path))
+    try:
+        return pd.read_sql_query(
+            """
+            SELECT code, trade_date, open, high, low, close,
+                   volume, amount, float_shares, turnover, hfq_factor
+            FROM preview_bars
+            WHERE trade_date=?
+            """,
+            conn,
+            params=(day,),
+        )
+    finally:
+        conn.close()
 
 
 def replace_code_df(conn: sqlite3.Connection, code: str, df: pd.DataFrame) -> int:
@@ -314,6 +472,13 @@ def stats(db_path: Path | None = None) -> dict:
         mx = conn.execute("SELECT MAX(trade_date) FROM daily_bars").fetchone()[0]
         mn = conn.execute("SELECT MIN(trade_date) FROM daily_bars").fetchone()[0]
         size = (db_path or DB_PATH).stat().st_size
+        n_prev = 0
+        n_snap = 0
+        try:
+            n_prev = conn.execute("SELECT COUNT(*) FROM preview_bars").fetchone()[0]
+            n_snap = conn.execute("SELECT COUNT(*) FROM preview_snapshots").fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
         return {
             "exists": True,
             "path": str(db_path or DB_PATH),
@@ -321,6 +486,8 @@ def stats(db_path: Path | None = None) -> dict:
             "rows": int(n_rows),
             "min_date": mn,
             "max_date": mx,
+            "preview_snapshots": int(n_snap),
+            "preview_bars": int(n_prev),
             "size_mb": round(size / 1e6, 1),
         }
     finally:
@@ -424,6 +591,9 @@ def main() -> None:
     p_s = sub.add_parser("stats", help="库统计")
     p_s.add_argument("--db", default=str(DB_PATH))
 
+    p_p = sub.add_parser("snapshots", help="列出已存的 preview 截面")
+    p_p.add_argument("--db", default=str(DB_PATH))
+
     args = parser.parse_args()
     if args.cmd == "migrate":
         migrate_from_csv(
@@ -436,6 +606,16 @@ def main() -> None:
         info = stats(Path(args.db))
         for k, v in info.items():
             print(f"{k}: {v}")
+    elif args.cmd == "snapshots":
+        rows = list_preview_snapshots(Path(args.db))
+        if not rows:
+            print("无 preview 截面")
+            return
+        print(f"{'trade_date':<12} {'snapshot_at':<22} {'n_bars':>7}  source")
+        for r in rows:
+            print(
+                f"{r['trade_date']:<12} {r['snapshot_at']:<22} {r['n_bars']:>7}  {r['source']}"
+            )
 
 
 if __name__ == "__main__":

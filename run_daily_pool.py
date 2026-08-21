@@ -22,6 +22,8 @@
   .venv/bin/python run_daily_pool.py --hot-only
   .venv/bin/python run_daily_pool.py --skip-update
   .venv/bin/python run_daily_pool.py --rebuild-html
+  # 用已存盘中截面回放筛选（新策略补历史 preview）
+  .venv/bin/python run_daily_pool.py --preview --from-preview-snapshot --base-only --from-date 2026-08-01 --to-date 2026-08-21
 """
 
 from __future__ import annotations
@@ -161,6 +163,27 @@ def run_update(force: bool = False, *, quality: str = "final") -> None:
     except Exception:
         asof = datetime.now().strftime("%Y-%m-%d")
     write_last_update(asof, quality)
+    if quality == "preview":
+        capture_preview_snapshot(asof)
+
+
+def capture_preview_snapshot(trade_date: str) -> dict:
+    """把当日盘中写入的 daily_bars 另存一份，供以后新策略回放。"""
+    import daily_db
+
+    info = daily_db.save_preview_snapshot(
+        trade_date,
+        snapshot_at=datetime.now().isoformat(timespec="seconds"),
+        source="preview",
+    )
+    if info.get("ok"):
+        log(
+            f"  preview 截面已存: {info['trade_date']} @ {info['snapshot_at']}  "
+            f"n={info['n_bars']}"
+        )
+    else:
+        log(f"  preview 截面未存: {info.get('error') or info}")
+    return info
 
 
 UPDATE_META = ROOT / "data" / "db" / "last_update.json"
@@ -1090,11 +1113,20 @@ def write_meta(
         "base": base_stat or {},
         "relaunch": relaunch_stat or {},
         "workflow": {
-            "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/",
-            "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更",
+            "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/；同时另存 preview_bars 截面",
+            "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更；不覆盖 preview 截面",
             "note": "不能用「库最大日期=今日」判断准确——preview 也会写成今日",
+            "replay": "新策略补历史：--preview --from-preview-snapshot --from-date … --to-date …",
         },
     }
+    try:
+        import daily_db
+
+        snap = daily_db.get_preview_snapshot(asof)
+        if snap:
+            meta["preview_snapshot"] = snap
+    except Exception:
+        pass
     path = day_dir / "meta.json"
     prev: dict = {}
     if path.exists():
@@ -1300,6 +1332,11 @@ def main() -> None:
     parser.add_argument("--skip-base", action="store_true", help="不跑底部启动")
     parser.add_argument("--skip-relaunch", action="store_true", help="不跑板后重启")
     parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
+    parser.add_argument(
+        "--from-preview-snapshot",
+        action="store_true",
+        help="用已存盘中截面回放筛选（需 --preview；自动跳过日更；无截面的交易日跳过）",
+    )
     parser.add_argument("--date", default="")
     parser.add_argument(
         "--from-date",
@@ -1336,6 +1373,9 @@ def main() -> None:
         return
 
     mode = "preview" if args.preview else "final"
+    use_snap = bool(args.from_preview_snapshot)
+    if use_snap and mode != "preview":
+        raise SystemExit("--from-preview-snapshot 需配合 --preview（写入 preview/ 目录）")
 
     do_long = True
     do_short = True
@@ -1416,13 +1456,53 @@ def main() -> None:
     elif do_short:
         scalp_ids = []
 
+    def run_day(d: str, *, preload: bool) -> tuple:
+        import daily_cache
+
+        if use_snap:
+            info = daily_cache.set_preview_overlay(d)
+            if not info:
+                msg = (
+                    f"无 preview 截面 {d}（查看：.venv/bin/python daily_db.py snapshots）"
+                )
+                if preload:
+                    raise SystemExit(msg)
+                log(f"  跳过 {d}：{msg}")
+                return ({}, {}, {}, {}, {}, {}, {}, {})
+            log(
+                f"  回放截面 {info['trade_date']} @ {info['snapshot_at']}  "
+                f"n={info.get('n_loaded', info.get('n_bars'))}"
+            )
+        try:
+            return run_one_day(
+                d,
+                mode=mode,
+                do_long=do_long,
+                do_short=do_short,
+                do_treasure=do_treasure,
+                do_hot=do_hot,
+                do_board=do_board,
+                do_base=do_base,
+                do_relaunch=do_relaunch,
+                short_bands=short_bands,
+                short_strategy_ids=short_ids,
+                scalp_strategy_ids=scalp_ids,
+                preload=preload,
+            )
+        finally:
+            if use_snap:
+                daily_cache.set_preview_overlay(None)
+
     from_d = args.from_date.strip()
     to_d = args.to_date.strip()
     if from_d or to_d:
         if not (from_d and to_d):
             raise SystemExit("--from-date 与 --to-date 需同时指定")
-        if not args.skip_update:
-            log("[1/4] 区间回填模式，自动跳过日线更新（可用 --skip-update 显式）")
+        if use_snap or not args.skip_update:
+            log(
+                "[1/4] 区间回填模式，自动跳过日线更新"
+                + ("（回放 preview 截面）" if use_snap else "（可用 --skip-update 显式）")
+            )
         else:
             log("[1/4] 跳过日线更新")
         clear_feature_cache()
@@ -1436,21 +1516,7 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat, _, _, _, _, _, _ = run_one_day(
-                d,
-                mode=mode,
-                do_long=do_long,
-                do_short=do_short,
-                do_treasure=do_treasure,
-                do_hot=do_hot,
-                do_board=do_board,
-                do_base=do_base,
-                do_relaunch=do_relaunch,
-                short_bands=short_bands,
-                short_strategy_ids=short_ids,
-                scalp_strategy_ids=scalp_ids,
-                preload=False,
-            )
+            _, short_stat, _, _, _, _, _, _ = run_day(d, preload=False)
             if do_short and short_has_strict_or_r3_buy(short_stat):
                 hit = True
                 log(f"  ✓ {d} strict/r3 有可短打")
@@ -1459,21 +1525,7 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat, _, _, _, _, _, _ = run_one_day(
-                    d,
-                    mode=mode,
-                    do_long=do_long,
-                    do_short=do_short,
-                    do_treasure=do_treasure,
-                    do_hot=do_hot,
-                    do_board=do_board,
-                    do_base=do_base,
-                    do_relaunch=do_relaunch,
-                    short_bands=short_bands,
-                    short_strategy_ids=short_ids,
-                    scalp_strategy_ids=scalp_ids,
-                    preload=False,
-                )
+                _, short_stat, _, _, _, _, _, _ = run_day(d, preload=False)
                 if short_has_strict_or_r3_buy(short_stat):
                     log(f"  ✓ 回溯命中 {d}（strict/r3 有可短打），停止")
                     hit = True
@@ -1484,7 +1536,10 @@ def main() -> None:
         log(f"完成，耗时 {time.time() - t0:.0f}s")
         return
 
-    if not args.skip_update:
+    if use_snap:
+        args.skip_update = True
+        log("[1/4] 回放 preview 截面，跳过日线更新")
+    elif not args.skip_update:
         if args.force_update:
             # 强制重拉并按当前 mode 记质量档
             run_update(force=True, quality=mode)
@@ -1503,21 +1558,7 @@ def main() -> None:
 
     clear_feature_cache()
     asof = args.date.strip() or resolve_asof()
-    _, _, _, _, hot_stat, _, _, _ = run_one_day(
-        asof,
-        mode=mode,
-        do_long=do_long,
-        do_short=do_short,
-        do_treasure=do_treasure,
-        do_hot=do_hot,
-        do_board=do_board,
-        do_base=do_base,
-        do_relaunch=do_relaunch,
-        short_bands=short_bands,
-        short_strategy_ids=short_ids,
-        scalp_strategy_ids=scalp_ids,
-        preload=True,
-    )
+    _, _, _, _, hot_stat, _, _, _ = run_day(asof, preload=True)
     log(f"完成，耗时 {time.time() - t0:.0f}s")
     if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
         log(f"打开信号池: {pool_day_dir(asof, mode) / 'index.html'}")
