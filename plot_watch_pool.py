@@ -166,7 +166,7 @@ __CSS__
   </div>
   <script>
     __DATA_JS__
-    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '🟥 无量首板' };
+    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '🟥 无量首板', base: '📦 底部启动', relaunch: '🔄 板后重启' };
     let currentTab = 'long';
     let charts = [];
 __CHART_JS__
@@ -491,6 +491,16 @@ main {
   color: #c62828;
   border-color: #ffc1bc;
 }
+.badge-strategy-bottom_base {
+  background: #f3e8d8;
+  color: #8d4e00;
+  border-color: #e8c89a;
+}
+.badge-strategy-board_relaunch {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-color: #a5d6a7;
+}
 .nav-strategy {
   display: inline-flex;
   align-items: center;
@@ -508,6 +518,8 @@ main {
 .nav-strategy-dry_stable, .nav-strategy-double_trough { background: #fff6e0; color: #b36b00; border: 1px solid #ffe0a3; }
 .nav-strategy-expand_after_dry, .nav-strategy-consol_vol_up { background: #e8f1ff; color: #0b57d0; border: 1px solid #b6d0fe; }
 .nav-strategy-quiet_limit_up, .nav-strategy-low_limit_up, .nav-strategy-quiet_first { background: #ffe8e6; color: #c62828; border: 1px solid #ffc1bc; }
+.nav-strategy-bottom_base { background: #f3e8d8; color: #8d4e00; border: 1px solid #e8c89a; }
+.nav-strategy-board_relaunch { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
 
 .cond-tip {
   color: var(--muted);
@@ -692,6 +704,8 @@ def build_html(
       <button type="button" class="tab-btn" data-tab="scalp">🎯 Scalp <span id="n-scalp">0</span></button>
       <button type="button" class="tab-btn" data-tab="treasure">💎 宝藏观察 <span id="n-treasure">0</span></button>
       <button type="button" class="tab-btn" data-tab="board">🟥 无量首板 <span id="n-board">0</span></button>
+      <button type="button" class="tab-btn" data-tab="base">📦 底部启动 <span id="n-base">0</span></button>
+      <button type="button" class="tab-btn" data-tab="relaunch">🔄 板后重启 <span id="n-relaunch">0</span></button>
     </div>"""
         sub = (
             f'<span id="tab-label">📈 中长线</span> · 共 <span id="count">0</span> 只'

@@ -4,9 +4,9 @@
 目录结构：
   signal_pool/
     YYYY-MM-DD/
-      meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/   # final
+      meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/ / base/ / relaunch/  # final
       preview/
-        meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/
+        meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/ / base/ / relaunch/
   hot_sectors/
     YYYY-MM-DD/
       meta.json / index.html / roles.json / sectors.csv
@@ -17,6 +17,8 @@
   .venv/bin/python run_daily_pool.py --preview
   .venv/bin/python run_daily_pool.py --treasure-only
   .venv/bin/python run_daily_pool.py --board-only
+  .venv/bin/python run_daily_pool.py --base-only
+  .venv/bin/python run_daily_pool.py --relaunch-only
   .venv/bin/python run_daily_pool.py --hot-only
   .venv/bin/python run_daily_pool.py --skip-update
   .venv/bin/python run_daily_pool.py --rebuild-html
@@ -319,6 +321,14 @@ def stocks_from_df(
             item["score"] = float(row["score"])
         if "hard_score" in row and pd.notna(row["hard_score"]):
             item["hardScore"] = float(row["hard_score"])
+        if "箱体底" in row and pd.notna(row["箱体底"]):
+            item["boxBottom"] = float(row["箱体底"])
+        if "箱体顶" in row and pd.notna(row["箱体顶"]):
+            item["boxTop"] = float(row["箱体顶"])
+        if "止盈价" in row and pd.notna(row["止盈价"]):
+            item["takeProfit"] = float(row["止盈价"])
+        if "止损参考" in row and pd.notna(row["止损参考"]):
+            item["stopRef"] = float(row["止损参考"])
         # 多策略标签（短线合并池）
         tags = row.get("strategy_tags")
         ids = row.get("strategy_ids")
@@ -380,6 +390,8 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
     scalp_stocks = panel("scalp")
     treasure_stocks = panel("treasure")
     board_stocks = panel("board")
+    base_stocks = panel("base")
+    relaunch_stocks = panel("relaunch")
     out_html = day_dir / "index.html"
     build_html(
         asof,
@@ -392,13 +404,16 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
             "scalp": scalp_stocks,
             "treasure": treasure_stocks,
             "board": board_stocks,
+            "base": base_stocks,
+            "relaunch": relaunch_stocks,
         },
     )
     log(
         f"  重刷 {asof} {day_dir.name if day_dir.name == 'preview' else 'final'}: "
         f"long={len(long_stocks)} short={len(short_stocks)} "
         f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
-        f"board={len(board_stocks)} → {out_html}"
+        f"board={len(board_stocks)} base={len(base_stocks)} "
+        f"relaunch={len(relaunch_stocks)} → {out_html}"
     )
 
 
@@ -509,6 +524,86 @@ def run_board(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
         "buy": n_buy,
         "watch": n_watch,
         "charts": len(stocks),
+    }, stocks
+
+
+def run_base(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
+    log("[2e/4] 底部横盘启动（base）…")
+    import bottom_base_screener as bbs
+
+    t0 = time.time()
+    df = bbs.scan(asof=asof)
+
+    out_dir = day_dir / "base"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df_out = df.copy() if not df.empty else df
+    if not df_out.empty:
+        buys = df_out[df_out["stage"] == "可买入"].copy()
+        buys.to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
+    else:
+        pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
+    df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
+    n_buy = int((df_out["stage"] == "可买入").sum()) if not df_out.empty else 0
+    n_watch = int((df_out["stage"] == "观察").sum()) if not df_out.empty else 0
+    log(
+        f"  base: 共 {len(df_out)} 条（可买入 {n_buy} / 观察 {n_watch}）"
+        f"→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
+        f"（筛选用时 {time.time() - t0:.1f}s）"
+    )
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="base 明细")
+    return {
+        "rows": len(df_out),
+        "buy": n_buy,
+        "watch": n_watch,
+        "charts": len(stocks),
+    }, stocks
+
+
+def run_relaunch(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
+    log("[2f/4] 板后重启（relaunch）…")
+    import board_relaunch_screener as brs
+
+    t0 = time.time()
+    df = brs.scan(asof=asof)
+
+    out_dir = day_dir / "relaunch"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df_out = df.copy() if not df.empty else df
+    if not df_out.empty:
+        buys = df_out[df_out["stage"] == "可买入"].copy()
+        buys.to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
+    else:
+        pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
+    df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
+    n_buy = int((df_out["stage"] == "可买入").sum()) if not df_out.empty else 0
+    n_watch = int((df_out["stage"] == "观察").sum()) if not df_out.empty else 0
+    mkt = {}
+    try:
+        mkt = brs.market_status(asof or (stocks[0]["bars"][-1]["date"] if stocks else ""))
+    except Exception:
+        mkt = {}
+    log(
+        f"  relaunch: 共 {len(df_out)} 条（可买入 {n_buy} / 观察 {n_watch}）"
+        f"→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
+        f"（筛选用时 {time.time() - t0:.1f}s）"
+    )
+    if mkt.get("note"):
+        log(f"  relaunch 大盘: {mkt['note']}")
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="relaunch 明细")
+    return {
+        "rows": len(df_out),
+        "buy": n_buy,
+        "watch": n_watch,
+        "charts": len(stocks),
+        "market": mkt,
     }, stocks
 
 
@@ -977,6 +1072,8 @@ def write_meta(
     treasure_stat: dict | None = None,
     scalp_stat: dict | None = None,
     board_stat: dict | None = None,
+    base_stat: dict | None = None,
+    relaunch_stat: dict | None = None,
 ) -> None:
     meta = {
         "date": asof,
@@ -990,6 +1087,8 @@ def write_meta(
         "scalp": scalp_stat or {},
         "treasure": treasure_stat or {},
         "board": board_stat or {},
+        "base": base_stat or {},
+        "relaunch": relaunch_stat or {},
         "workflow": {
             "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/",
             "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更",
@@ -997,6 +1096,15 @@ def write_meta(
         },
     }
     path = day_dir / "meta.json"
+    prev: dict = {}
+    if path.exists():
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            prev = {}
+    for key in ("long", "short", "scalp", "treasure", "board", "base", "relaunch"):
+        if not meta.get(key) and prev.get(key):
+            meta[key] = prev[key]
     path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"[4/4] meta → {path}")
 
@@ -1034,12 +1142,14 @@ def run_one_day(
     do_treasure: bool = True,
     do_hot: bool = True,
     do_board: bool = True,
+    do_base: bool = True,
+    do_relaunch: bool = True,
     short_bands: Path | None = None,
     short_strategy_ids: list[str] | None = None,
     scalp_strategy_ids: list[str] | None = None,
     preload: bool = True,
-) -> tuple[dict, dict, dict, dict, dict, dict]:
-    """生成单日 signal_pool（+可选 hot_sectors）。返回 (long, short, treasure, scalp, hot, board)。"""
+) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
+    """生成单日 signal_pool（+可选 hot_sectors）。返回含 relaunch。"""
     day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
@@ -1053,11 +1163,15 @@ def run_one_day(
     scalp_stat: dict = {}
     hot_stat: dict = {}
     board_stat: dict = {}
+    base_stat: dict = {}
+    relaunch_stat: dict = {}
     long_stocks: list[dict] = []
     short_stocks: list[dict] = []
     treasure_stocks: list[dict] = []
     scalp_stocks: list[dict] = []
     board_stocks: list[dict] = []
+    base_stocks: list[dict] = []
+    relaunch_stocks: list[dict] = []
 
     def existing(name: str) -> list[dict]:
         return stocks_from_df(
@@ -1087,6 +1201,16 @@ def run_one_day(
     else:
         log("[2d/4] 跳过无量首板")
         board_stocks = existing("board")
+    if do_base:
+        base_stat, base_stocks = run_base(day_dir, asof=asof)
+    else:
+        log("[2e/4] 跳过底部启动")
+        base_stocks = existing("base")
+    if do_relaunch:
+        relaunch_stat, relaunch_stocks = run_relaunch(day_dir, asof=asof)
+    else:
+        log("[2f/4] 跳过板后重启")
+        relaunch_stocks = existing("relaunch")
     if do_short:
         short_stat, short_stocks, scalp_stat, scalp_stocks = run_short(
             day_dir,
@@ -1100,7 +1224,7 @@ def run_one_day(
         short_stocks = existing("short")
         scalp_stocks = existing("scalp")
 
-    if do_long or do_short or do_treasure or do_board:
+    if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
         from plot_watch_pool import build_html
 
         out_html = day_dir / "index.html"
@@ -1115,12 +1239,15 @@ def run_one_day(
                 "scalp": scalp_stocks,
                 "treasure": treasure_stocks,
                 "board": board_stocks,
+                "base": base_stocks,
+                "relaunch": relaunch_stocks,
             },
         )
         log(
             f"  合并图: long={len(long_stocks)} short={len(short_stocks)} "
             f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
-            f"board={len(board_stocks)} → {out_html}"
+            f"board={len(board_stocks)} base={len(base_stocks)} "
+            f"relaunch={len(relaunch_stocks)} → {out_html}"
         )
         write_meta(
             day_dir,
@@ -1131,9 +1258,20 @@ def run_one_day(
             treasure_stat,
             scalp_stat=scalp_stat,
             board_stat=board_stat,
+            base_stat=base_stat,
+            relaunch_stat=relaunch_stat,
         )
 
-    return long_stat, short_stat, treasure_stat, scalp_stat, hot_stat, board_stat
+    return (
+        long_stat,
+        short_stat,
+        treasure_stat,
+        scalp_stat,
+        hot_stat,
+        board_stat,
+        base_stat,
+        relaunch_stat,
+    )
 
 
 def main() -> None:
@@ -1154,9 +1292,13 @@ def main() -> None:
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--treasure-only", action="store_true")
     parser.add_argument("--board-only", action="store_true", help="只跑低位无量首板（其它 tab 用已有 CSV）")
+    parser.add_argument("--base-only", action="store_true", help="只跑底部横盘启动（其它 tab 用已有 CSV）")
+    parser.add_argument("--relaunch-only", action="store_true", help="只跑板后重启（其它 tab 用已有 CSV）")
     parser.add_argument("--hot-only", action="store_true", help="只跑热门板块角色 HTML")
     parser.add_argument("--skip-treasure", action="store_true", help="不跑宝藏观察池")
     parser.add_argument("--skip-board", action="store_true", help="不跑无量首板")
+    parser.add_argument("--skip-base", action="store_true", help="不跑底部启动")
+    parser.add_argument("--skip-relaunch", action="store_true", help="不跑板后重启")
     parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
     parser.add_argument("--date", default="")
     parser.add_argument(
@@ -1199,32 +1341,60 @@ def main() -> None:
     do_short = True
     do_treasure = not args.skip_treasure
     do_board = not args.skip_board
+    do_base = not args.skip_base
+    do_relaunch = not args.skip_relaunch
     do_hot = not args.skip_hot
     if args.hot_only:
         do_long = False
         do_short = False
         do_treasure = False
         do_board = False
+        do_base = False
+        do_relaunch = False
         do_hot = True
+    elif args.relaunch_only:
+        do_long = False
+        do_short = False
+        do_treasure = False
+        do_board = False
+        do_base = False
+        do_relaunch = True
+        do_hot = False
+    elif args.base_only:
+        do_long = False
+        do_short = False
+        do_treasure = False
+        do_board = False
+        do_base = True
+        do_relaunch = False
+        do_hot = False
     elif args.board_only:
         do_long = False
         do_short = False
         do_treasure = False
         do_board = True
+        do_base = False
+        do_relaunch = False
         do_hot = False
     elif args.treasure_only:
         do_long = False
         do_short = False
         do_treasure = True
         do_board = False
+        do_base = False
+        do_relaunch = False
         do_hot = False
     elif args.long_only:
         do_short = False
         do_board = False
+        do_base = False
+        do_relaunch = False
         do_hot = False
     elif args.short_only:
         do_long = False
         do_board = False
+        do_base = False
+        do_relaunch = False
         do_hot = False
 
     short_bands = Path(args.short_bands) if args.short_bands.strip() else None
@@ -1266,7 +1436,7 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat, _, _, _, _ = run_one_day(
+            _, short_stat, _, _, _, _, _, _ = run_one_day(
                 d,
                 mode=mode,
                 do_long=do_long,
@@ -1274,6 +1444,8 @@ def main() -> None:
                 do_treasure=do_treasure,
                 do_hot=do_hot,
                 do_board=do_board,
+                do_base=do_base,
+                do_relaunch=do_relaunch,
                 short_bands=short_bands,
                 short_strategy_ids=short_ids,
                 scalp_strategy_ids=scalp_ids,
@@ -1287,7 +1459,7 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat, _, _, _, _ = run_one_day(
+                _, short_stat, _, _, _, _, _, _ = run_one_day(
                     d,
                     mode=mode,
                     do_long=do_long,
@@ -1295,6 +1467,8 @@ def main() -> None:
                     do_treasure=do_treasure,
                     do_hot=do_hot,
                     do_board=do_board,
+                    do_base=do_base,
+                    do_relaunch=do_relaunch,
                     short_bands=short_bands,
                     short_strategy_ids=short_ids,
                     scalp_strategy_ids=scalp_ids,
@@ -1329,7 +1503,7 @@ def main() -> None:
 
     clear_feature_cache()
     asof = args.date.strip() or resolve_asof()
-    _, _, _, _, hot_stat, _ = run_one_day(
+    _, _, _, _, hot_stat, _, _, _ = run_one_day(
         asof,
         mode=mode,
         do_long=do_long,
@@ -1337,13 +1511,15 @@ def main() -> None:
         do_treasure=do_treasure,
         do_hot=do_hot,
         do_board=do_board,
+        do_base=do_base,
+        do_relaunch=do_relaunch,
         short_bands=short_bands,
         short_strategy_ids=short_ids,
         scalp_strategy_ids=scalp_ids,
         preload=True,
     )
     log(f"完成，耗时 {time.time() - t0:.0f}s")
-    if do_long or do_short or do_treasure or do_board:
+    if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
         log(f"打开信号池: {pool_day_dir(asof, mode) / 'index.html'}")
     if do_hot and hot_stat.get("index_html"):
         log(f"打开热门板块: {hot_stat['index_html']}")

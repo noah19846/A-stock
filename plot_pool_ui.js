@@ -64,6 +64,42 @@ function sma(arr, n) {
       };
     }
 
+    function boxMarkLine(stock) {
+      const lines = [];
+      if (stock.boxBottom != null && Number.isFinite(stock.boxBottom)) {
+        lines.push({
+          yAxis: stock.boxBottom,
+          name: '箱体底',
+          label: {
+            formatter: '箱体底 ' + Number(stock.boxBottom).toFixed(2),
+            color: '#c62828',
+            fontSize: 10,
+            position: 'insideEndTop'
+          },
+          lineStyle: { type: 'dashed', color: '#c62828', width: 1.4 }
+        });
+      }
+      if (stock.takeProfit != null && Number.isFinite(stock.takeProfit)) {
+        lines.push({
+          yAxis: stock.takeProfit,
+          name: '止盈',
+          label: {
+            formatter: '止盈 ' + Number(stock.takeProfit).toFixed(2),
+            color: '#0d7a5f',
+            fontSize: 10,
+            position: 'insideEndBottom'
+          },
+          lineStyle: { type: 'dashed', color: '#0d7a5f', width: 1.1 }
+        });
+      }
+      if (!lines.length) return undefined;
+      return {
+        silent: true,
+        symbol: 'none',
+        data: lines
+      };
+    }
+
     function buildOption(stock, panel) {
       const bars = stock.bars;
       const dates = bars.map(b => b.date);
@@ -203,7 +239,8 @@ function sma(arr, n) {
               color0: '#14b15b',
               borderColor: '#e74c3c',
               borderColor0: '#14b15b'
-            }
+            },
+            markLine: boxMarkLine(stock)
           },
           {
             name: 'MA5', type: 'line', data: ma5,
@@ -360,6 +397,8 @@ function sma(arr, n) {
       if (k === 'dry_stable' || k === 'double_trough') return 'badge-strategy-' + k;
       if (k === 'expand_after_dry' || k === 'consol_vol_up') return 'badge-strategy-' + k;
       if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'badge-strategy-' + k;
+      if (k === 'bottom_base') return 'badge-strategy-bottom_base';
+      if (k === 'board_relaunch') return 'badge-strategy-board_relaunch';
       return 'badge-strategy-default';
     }
     function navStrategyClass(id) {
@@ -370,6 +409,8 @@ function sma(arr, n) {
       if (k === 'dry_stable' || k === 'double_trough') return 'nav-strategy nav-strategy-' + k;
       if (k === 'expand_after_dry' || k === 'consol_vol_up') return 'nav-strategy nav-strategy-' + k;
       if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'nav-strategy nav-strategy-' + k;
+      if (k === 'bottom_base') return 'nav-strategy nav-strategy-bottom_base';
+      if (k === 'board_relaunch') return 'nav-strategy nav-strategy-board_relaunch';
       return 'nav-strategy nav-strategy-default';
     }
     /** 展示用策略标签：隐藏「默认」 */
@@ -440,6 +481,10 @@ function sma(arr, n) {
         parts.push(chip('画像', Number(s.score).toFixed(3), 'metric-score'));
       if (s.hardScore != null)
         parts.push(chip('硬条件', Number(s.hardScore).toFixed(3), 'metric-score'));
+      if (s.boxBottom != null)
+        parts.push(chip('箱体底', fmtPrice(s.boxBottom), 'metric-box'));
+      if (s.takeProfit != null)
+        parts.push(chip('止盈', fmtPrice(s.takeProfit), 'metric-tp'));
       parts.push(chip('收盘', fmtPrice(s.close), chgClass(s.ret1d)));
       parts.push(chip('今日', fmtPct(s.ret1d, 2), chgClass(s.ret1d)));
       if (s.ret60 != null)
@@ -480,7 +525,7 @@ function sma(arr, n) {
       return '观察';
     }
     const chartInstances = {};
-    const panelBuilt = { long: false, short: false, treasure: false, board: false };
+    const panelBuilt = { long: false, short: false, treasure: false, board: false, base: false, relaunch: false };
     let panesReady = false;
 
     function disposeCharts() {
@@ -515,11 +560,15 @@ function sma(arr, n) {
         const ns = document.getElementById('n-short');
         const np = document.getElementById('n-scalp');
         const nb = document.getElementById('n-board');
+        const nbase = document.getElementById('n-base');
+        const nr = document.getElementById('n-relaunch');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
         if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
+        if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';
+        if (nr) nr.textContent = '(' + String((PANELS.relaunch || []).length) + ')';
       }
     }
     function ensureTabPanes() {
@@ -531,13 +580,17 @@ function sma(arr, n) {
         '<div id="nav-short" class="tab-pane" hidden></div>' +
         '<div id="nav-scalp" class="tab-pane" hidden></div>' +
         '<div id="nav-treasure" class="tab-pane" hidden></div>' +
-        '<div id="nav-board" class="tab-pane" hidden></div>';
+        '<div id="nav-board" class="tab-pane" hidden></div>' +
+        '<div id="nav-base" class="tab-pane" hidden></div>' +
+        '<div id="nav-relaunch" class="tab-pane" hidden></div>';
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
         '<div id="main-short" class="tab-pane" hidden></div>' +
         '<div id="main-scalp" class="tab-pane" hidden></div>' +
         '<div id="main-treasure" class="tab-pane" hidden></div>' +
-        '<div id="main-board" class="tab-pane" hidden></div>';
+        '<div id="main-board" class="tab-pane" hidden></div>' +
+        '<div id="main-base" class="tab-pane" hidden></div>' +
+        '<div id="main-relaunch" class="tab-pane" hidden></div>';
       panesReady = true;
     }
     function resizeTabCharts(tab) {
@@ -554,7 +607,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short', 'scalp', 'treasure', 'board'].forEach(t => {
+      ['long', 'short', 'scalp', 'treasure', 'board', 'base', 'relaunch'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);
@@ -689,11 +742,15 @@ function sma(arr, n) {
         const ns = document.getElementById('n-short');
         const np = document.getElementById('n-scalp');
         const nb = document.getElementById('n-board');
+        const nbase = document.getElementById('n-base');
+        const nr = document.getElementById('n-relaunch');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
         if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
+        if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';
+        if (nr) nr.textContent = '(' + String((PANELS.relaunch || []).length) + ')';
         showTab(currentTab);
         return;
       }

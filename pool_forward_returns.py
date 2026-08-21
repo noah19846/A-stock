@@ -1,11 +1,13 @@
 """
 信号池 / 热门推荐 → 次日起逐日涨跌幅（HTML）
 
-每个选股日四张独立表（页内 tab）：
+每个选股日六张独立表（页内 tab）：
   1) 短线可短打
   2) 长线可买入
   3) 无量首板续板候选
-  4) 热门可买 / 轻仓可买
+  4) 底部启动可买入
+  5) 板后重启可买入
+  6) 热门可买 / 轻仓可买
 
 选出日 T 的名单，打印 T 之后每个交易日的涨跌幅，直到日线最新。
 默认从最早有信号池的日期起，按选股日分段生成一张 HTML。
@@ -223,6 +225,42 @@ def load_board_buys(pick_date: str, preview: bool) -> pd.DataFrame:
         out = df[df["stage"].astype(str) == "可买入"]
     out = out.copy()
     out["source"] = "无量首板"
+    tags = out["strategy_tags"] if "strategy_tags" in out.columns else out["stage"]
+    out["src_detail"] = tags.astype(str)
+    return out[["code", "name", "source", "src_detail"]]
+
+
+def load_base_buys(pick_date: str, preview: bool) -> pd.DataFrame:
+    d = pool_day_dir(pick_date, preview)
+    if d is None:
+        return pd.DataFrame()
+    df = _read_signal_csv(d / "base" / "signals.csv")
+    if df.empty:
+        return df
+    if "can_buy" in df.columns:
+        out = df[df["can_buy"].astype(str).str.lower().isin(["true", "1"])]
+    else:
+        out = df[df["stage"].astype(str) == "可买入"]
+    out = out.copy()
+    out["source"] = "底部启动"
+    tags = out["strategy_tags"] if "strategy_tags" in out.columns else out["stage"]
+    out["src_detail"] = tags.astype(str)
+    return out[["code", "name", "source", "src_detail"]]
+
+
+def load_relaunch_buys(pick_date: str, preview: bool) -> pd.DataFrame:
+    d = pool_day_dir(pick_date, preview)
+    if d is None:
+        return pd.DataFrame()
+    df = _read_signal_csv(d / "relaunch" / "signals.csv")
+    if df.empty:
+        return df
+    if "can_buy" in df.columns:
+        out = df[df["can_buy"].astype(str).str.lower().isin(["true", "1"])]
+    else:
+        out = df[df["stage"].astype(str) == "可买入"]
+    out = out.copy()
+    out["source"] = "板后重启"
     tags = out["strategy_tags"] if "strategy_tags" in out.columns else out["stage"]
     out["src_detail"] = tags.astype(str)
     return out[["code", "name", "source", "src_detail"]]
@@ -547,11 +585,13 @@ def render_panel(
         n_s = counts.get("short", 0)
         n_l = counts.get("long", 0)
         n_b = counts.get("board", 0)
+        n_base = counts.get("base", 0)
+        n_r = counts.get("relaunch", 0)
         n_h = counts.get("hot", 0)
         both_nav = f" · 双{n_both}" if n_both else ""
         nav.append(
             f'<a href="#{anchor}">{html.escape(pick_date)} '
-            f'<span class="muted">短{n_s} 长{n_l} 板{n_b} 热{n_h}'
+            f'<span class="muted">短{n_s} 长{n_l} 板{n_b} 底{n_base} 启{n_r} 热{n_h}'
             f"{html.escape(both_nav)}</span></a>"
         )
 
@@ -720,7 +760,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   <nav class="nav">
     <h1>选股次日涨跌</h1>
     <div class="sub">{html.escape(start)} → {html.escape(end)}<br/>
-    每日四表：短线 / 长线 / 无量首板 / 热门<br/>
+    每日六表：短线 / 长线 / 无量首板 / 底部启动 / 板后重启 / 热门<br/>
     <span class="badge-both">双</span> = Preview 与正式均入选 · 名称点进雪球<br/>
     生成 {html.escape(generated_at)}</div>
     <div class="tabs" role="tablist">
@@ -765,7 +805,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   }});
   let src = 'short';
   try {{ src = localStorage.getItem('fwd-ret-src') || 'short'; }} catch (e) {{}}
-  if (['short', 'long', 'board', 'hot'].indexOf(src) >= 0) activateSrc(src);
+  if (['short', 'long', 'board', 'base', 'relaunch', 'hot'].indexOf(src) >= 0) activateSrc(src);
 }})();
 </script>
 </body>
@@ -781,6 +821,8 @@ def build_sections(
         short = as_picks(load_short_buys(pick_date, preview), "短线")
         long = as_picks(load_long_buys(pick_date, preview), "长线")
         board = as_picks(load_board_buys(pick_date, preview), "无量首板")
+        base = as_picks(load_base_buys(pick_date, preview), "底部启动")
+        relaunch = as_picks(load_relaunch_buys(pick_date, preview), "板后重启")
         hot = load_hot_picks(pick_date, preview)
         blocks = [
             make_block("short", "短线", short, pick_date, asof, f"可短打 {len(short)}"),
@@ -792,6 +834,22 @@ def build_sections(
                 pick_date,
                 asof,
                 f"续板候选 {len(board)}",
+            ),
+            make_block(
+                "base",
+                "底部启动",
+                base,
+                pick_date,
+                asof,
+                f"可买入 {len(base)}",
+            ),
+            make_block(
+                "relaunch",
+                "板后重启",
+                relaunch,
+                pick_date,
+                asof,
+                f"可买入 {len(relaunch)}",
             ),
             make_block(
                 "hot",
