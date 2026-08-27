@@ -1380,7 +1380,8 @@ def main() -> None:
     do_long = True
     do_short = True
     do_treasure = not args.skip_treasure
-    do_board = not args.skip_board
+    # 无量首板当前不可稳定执行，默认停用；需要研究时仍可用 --board-only。
+    do_board = False
     do_base = not args.skip_base
     do_relaunch = not args.skip_relaunch
     do_hot = not args.skip_hot
