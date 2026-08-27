@@ -103,10 +103,8 @@ def metrics_at(df: pd.DataFrame, i: int | None = None) -> dict | None:
     rets40 = np.diff(px[i - 40 : i + 1]) / px[i - 40 : i]
     vol40 = float(np.std(rets40) * 100) if len(rets40) > 5 else np.nan
     quiet40 = float(np.mean(np.abs(rets40) < 0.01) * 100) if len(rets40) else np.nan
+    # daily_cache 已将换手率统一为百分比（例如 0.23 表示 0.23%）。
     turn_i = float(turn[i])
-    # daily_cache turn 多为小数占比
-    if np.isfinite(turn_i) and turn_i < 0.5:
-        turn_i *= 100.0
 
     return {
         "收盘": round(float(df["收盘"].iloc[i]), 3),
