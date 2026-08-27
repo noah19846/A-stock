@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import lru_cache
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -35,6 +36,7 @@ def load_bands(path: Path | None = None) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=1)
 def load_maps() -> tuple[dict[str, str], dict[str, str]]:
     name_map: dict[str, str] = {}
     if LIST.exists():

@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -54,8 +56,6 @@ def load_setup_cfg(path: Path | None = None) -> dict:
     p = path or SETUP_CFG_PATH
     if not p.exists():
         return SETUP
-    import json
-
     raw = json.loads(p.read_text(encoding="utf-8"))
     for k in ("mv_lo", "mv_hi", "px_ma20_lo", "px_ma20_hi", "dist60_lo", "dist60_hi",
               "ret20_lo", "ret20_hi", "amt_ratio_hi", "turn_hi"):
@@ -156,6 +156,7 @@ class Verdict:
         return d
 
 
+@lru_cache(maxsize=1)
 def load_maps() -> tuple[dict[str, str], dict[str, str]]:
     name_map: dict[str, str] = {}
     if LIST.exists():

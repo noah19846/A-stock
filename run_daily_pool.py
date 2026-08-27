@@ -1432,6 +1432,7 @@ def main() -> None:
         do_hot = False
     elif args.short_only:
         do_long = False
+        do_treasure = False
         do_board = False
         do_base = False
         do_relaunch = False

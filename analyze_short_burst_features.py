@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +69,7 @@ FEATURE_COLS = [
 ]
 
 
+@lru_cache(maxsize=1)
 def load_maps() -> tuple[dict[str, str], dict[str, str]]:
     name_map: dict[str, str] = {}
     if LIST.exists():

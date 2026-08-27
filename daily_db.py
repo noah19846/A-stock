@@ -438,10 +438,7 @@ def last_two_by_code(conn: sqlite3.Connection) -> dict[str, dict]:
     按码走 (code, trade_date) 索引 LIMIT 2，避免全表窗口扫描（~100s → ~1s）。
     """
     out: dict[str, dict] = {}
-    codes = [
-        str(r[0]).zfill(6)
-        for r in conn.execute("SELECT DISTINCT code FROM daily_bars")
-    ]
+    codes = [str(r[0]).zfill(6) for r in conn.execute("SELECT DISTINCT code FROM daily_bars")]
     sql = """
       SELECT trade_date, hfq_factor, float_shares
       FROM daily_bars
