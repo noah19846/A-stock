@@ -194,11 +194,11 @@ __CHART_JS__
 _CSS = """
 
 :root {
-  --bg: #f0f2f5;
-  --card: #ffffff;
-  --text: #1a1d21;
-  --muted: #5c6570;
-  --line: #d8dee6;
+      --bg: #f0f2f5;
+      --card: #ffffff;
+      --text: #1a1d21;
+      --muted: #5c6570;
+      --line: #d8dee6;
   --sidebar: #f7f8fa;
   --sidebar-w: 260px;
   /* 目录锚点跳转时避开 sticky 顶栏；JS 会按实测高度覆盖 */
@@ -209,11 +209,11 @@ html {
   scroll-padding-top: calc(var(--sticky-header-h) + 10px);
 }
 body {
-  margin: 0;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.5;
+      margin: 0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
 }
 .app {
   display: flex;
@@ -353,38 +353,38 @@ a.xq-link svg { width: 14px; height: 14px; display: block; }
   min-width: 0;
 }
 header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: rgba(240,242,245,0.94);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--line);
-  padding: 14px 20px 10px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(240,242,245,0.94);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 20px 10px;
 }
 h1 { margin: 0 0 4px; font-size: 1.35rem; font-weight: 650; }
 .sub { margin: 0 0 4px; color: var(--muted); font-size: 0.9rem; }
 main {
-  max-width: 1180px;
-  margin: 0 auto;
+      max-width: 1180px;
+      margin: 0 auto;
   padding: 16px 16px 48px;
   display: grid;
   gap: 14px;
 }
 /* Tab 模式下卡片挂在 .tab-pane 下，间距要加在这里 */
 #main > .tab-pane {
-  display: grid;
+      display: grid;
   gap: 14px;
 }
 .card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px 12px 4px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 12px 4px;
   scroll-margin-top: calc(var(--sticky-header-h) + 10px);
 }
 .card-head {
-  display: flex;
-  flex-wrap: wrap;
+      display: flex;
+      flex-wrap: wrap;
   align-items: center;
   gap: 8px 10px;
   padding: 0 4px 8px;
@@ -543,7 +543,7 @@ main {
 }
 .metric {
   display: inline-flex;
-  align-items: baseline;
+      align-items: baseline;
   gap: 4px;
   padding: 3px 9px;
   border-radius: 6px;
