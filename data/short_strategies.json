@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "daily_html": ["strict", "r3"],
+  "daily_html": ["default", "strict", "r3"],
   "daily_scalp_tabs": ["scalp"],
   "strategies": [
     {
