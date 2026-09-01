@@ -56,6 +56,7 @@ FEATURE_COLS = [
     "MA10/MA20",
     "距20日高点%",
     "距60日高点%",
+    "距60日低点%",
     "当日振幅%",
     "额能比1_5",
     "额能比5_20",
@@ -123,6 +124,13 @@ def features_at(df: pd.DataFrame, i: int) -> dict | None:
         sl = px[max(0, i - n + 1) : i + 1]
         return float(close / sl.max() - 1.0) * 100.0
 
+    def dist_low(n: int) -> float:
+        sl = lo[max(0, i - n + 1) : i + 1]
+        lo_n = float(np.nanmin(sl))
+        if not np.isfinite(lo_n) or lo_n <= 0:
+            return np.nan
+        return float(close / lo_n - 1.0) * 100.0
+
     amt1 = float(amt[i])
     amt5 = float(np.nanmean(amt[i - 4 : i + 1]))
     amt20 = float(np.nanmean(amt[i - 19 : i + 1]))
@@ -148,6 +156,7 @@ def features_at(df: pd.DataFrame, i: int) -> dict | None:
         "MA10/MA20": ma10 / ma20,
         "距20日高点%": dist_high(20),
         "距60日高点%": dist_high(60),
+        "距60日低点%": dist_low(60),
         "当日振幅%": amp,
         "额能比1_5": amt1 / amt5 if amt5 > 0 else np.nan,
         "额能比5_20": amt5 / amt20 if amt20 > 0 else np.nan,

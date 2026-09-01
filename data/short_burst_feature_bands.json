@@ -132,5 +132,6 @@
   },
   "signal_hard": 0.85,
   "signal_soft": 0.72,
+  "warn_dist60_low_pct": 20.0,
   "mv_yi": [40, 800]
 }

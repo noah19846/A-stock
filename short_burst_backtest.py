@@ -71,6 +71,12 @@ def is_signal(feat: dict, soft: float, hard: float, bands: dict) -> bool:
         return False
     if feat.get("前1日涨幅%", 0) > 3:
         return False
+    # 离 60 日低点涨太多：底部段已走完，默认不进信号
+    max_from_low = bands.get("max_dist60_low_pct")
+    if max_from_low is not None:
+        v = feat.get("距60日低点%")
+        if v is None or not np.isfinite(float(v)) or float(v) > float(max_from_low):
+            return False
     return True
 
 
@@ -80,6 +86,10 @@ def _roll_mean(a: np.ndarray, n: int) -> np.ndarray:
 
 def _roll_max(a: np.ndarray, n: int) -> np.ndarray:
     return pd.Series(a).rolling(n, min_periods=1).max().to_numpy()
+
+
+def _roll_min(a: np.ndarray, n: int) -> np.ndarray:
+    return pd.Series(a).rolling(n, min_periods=1).min().to_numpy()
 
 
 def _roll_std(a: np.ndarray, n: int) -> np.ndarray:
@@ -116,6 +126,7 @@ def precompute_feature_table(df: pd.DataFrame) -> dict[str, np.ndarray]:
     vol20 = _roll_mean(vol, 20)
     hi20 = _roll_max(px, 20)
     hi60 = _roll_max(px, 60)
+    lo60 = _roll_min(lo, 60)
 
     # 近 10 日上涨占比 / 波动 / 安静日：用 rolling
     ret_pos = (ret > 0).astype(float)
@@ -147,6 +158,7 @@ def precompute_feature_table(df: pd.DataFrame) -> dict[str, np.ndarray]:
             "MA10/MA20": ma10 / ma20,
             "距20日高点%": (px / hi20 - 1.0) * 100.0,
             "距60日高点%": (px / hi60 - 1.0) * 100.0,
+            "距60日低点%": (px / lo60 - 1.0) * 100.0,
             "当日振幅%": (hi - lo) / px * 100.0,
             "额能比1_5": amt / amt5,
             "额能比5_20": amt5 / amt20,

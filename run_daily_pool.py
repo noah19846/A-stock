@@ -344,6 +344,13 @@ def stocks_from_df(
             item["score"] = float(row["score"])
         if "hard_score" in row and pd.notna(row["hard_score"]):
             item["hardScore"] = float(row["hard_score"])
+        if "距60日低点%" in row.index and pd.notna(row.get("距60日低点%")):
+            item["dist60LowPct"] = round(float(row["距60日低点%"]), 2)
+        warn = row.get("离底过远提醒")
+        if warn in (True, 1, "True", "1", "true") or (
+            item.get("dist60LowPct") is not None and item["dist60LowPct"] > 20.0
+        ):
+            item["warnFarFromLow"] = True
         if "箱体底" in row and pd.notna(row["箱体底"]):
             item["boxBottom"] = float(row["箱体底"])
         if "箱体顶" in row and pd.notna(row["箱体顶"]):

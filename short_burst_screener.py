@@ -155,6 +155,13 @@ def verdict_from_feat(
     metrics["今日涨跌%"] = (
         round(float(df["ret"].iloc[i]) * 100, 3) if np.isfinite(df["ret"].iloc[i]) else np.nan
     )
+    warn_thr = float(bands.get("warn_dist60_low_pct", 20.0))
+    d60l = feat.get("距60日低点%")
+    metrics["离底过远提醒"] = bool(
+        d60l is not None
+        and np.isfinite(float(d60l))
+        and float(d60l) > warn_thr
+    )
 
     return Verdict(
         code=code,

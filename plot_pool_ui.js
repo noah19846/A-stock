@@ -427,10 +427,20 @@ function sma(arr, n) {
       return out;
     }
 
+    function farFromLowTitle(s) {
+      const pct = s.dist60LowPct != null ? Number(s.dist60LowPct).toFixed(1) : '';
+      const head = '距60日低点涨幅偏高（默认>20%）';
+      if (pct) return head + '：当前 +' + pct + '%，底部发动段可能已过，慎追首打';
+      return head + '，慎追首打';
+    }
+
     function badgesHtml(s) {
       let html = '<span class="badges">';
       if (s.hotSector) {
         html += '<span class="badge badge-hot" title="' + escapeHtml(hotTitle(s)) + '">' + HOT_TORCH_SVG + '</span>';
+      }
+      if (s.warnFarFromLow) {
+        html += '<span class="badge badge-warn-far-low" title="' + escapeHtml(farFromLowTitle(s)) + '">离底远</span>';
       }
       if (s.industry)
         html += '<span class="badge badge-industry' + (s.hotSector ? ' badge-industry-hot' : '') + '">' +
@@ -481,6 +491,8 @@ function sma(arr, n) {
         parts.push(chip('画像', Number(s.score).toFixed(3), 'metric-score'));
       if (s.hardScore != null)
         parts.push(chip('硬条件', Number(s.hardScore).toFixed(3), 'metric-score'));
+      if (s.dist60LowPct != null)
+        parts.push(chip('距60低', '+' + Number(s.dist60LowPct).toFixed(1) + '%', s.warnFarFromLow ? 'metric-warn-far-low' : 'metric-dist60'));
       if (s.boxBottom != null)
         parts.push(chip('箱体底', fmtPrice(s.boxBottom), 'metric-box'));
       if (s.takeProfit != null)
@@ -696,6 +708,14 @@ function sma(arr, n) {
           hot.setAttribute('aria-label', hotTitle(s));
           hot.innerHTML = HOT_TORCH_SVG;
           rowTags.appendChild(hot);
+          hasTag = true;
+        }
+        if (s.warnFarFromLow) {
+          const warn = document.createElement('span');
+          warn.className = 'nav-warn-far-low';
+          warn.textContent = '离底远';
+          warn.title = farFromLowTitle(s);
+          rowTags.appendChild(warn);
           hasTag = true;
         }
         const strats = visibleStrategies(s);
