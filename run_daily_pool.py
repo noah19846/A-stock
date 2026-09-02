@@ -272,6 +272,21 @@ def hot_map_for_day_dir(day_dir: Path, asof: str | None) -> dict[str, str]:
     return load_hot_industries(asof, mode)
 
 
+def _dist60_low_pct_from_bars(bars: list[dict], *, min_bars: int = 60) -> float | None:
+    """收盘相对近 min_bars 根 K 线最低价的涨幅 %。"""
+    if len(bars) < min_bars:
+        return None
+    seg = bars[-min_bars:]
+    lo = min(float(b["low"]) for b in seg)
+    close = float(bars[-1]["close"])
+    if lo <= 0:
+        return None
+    return round((close / lo - 1.0) * 100.0, 2)
+
+
+WARN_DIST60_LOW_PCT = 20.0
+
+
 def stocks_from_df(
     df: pd.DataFrame,
     days: int = 180,
@@ -346,11 +361,18 @@ def stocks_from_df(
             item["hardScore"] = float(row["hard_score"])
         if "距60日低点%" in row.index and pd.notna(row.get("距60日低点%")):
             item["dist60LowPct"] = round(float(row["距60日低点%"]), 2)
-        warn = row.get("离底过远提醒")
-        if warn in (True, 1, "True", "1", "true") or (
-            item.get("dist60LowPct") is not None and item["dist60LowPct"] > 20.0
-        ):
-            item["warnFarFromLow"] = True
+        short_like = advice in ("可短打", "观察")
+        if item.get("dist60LowPct") is None and short_like:
+            from_bars = _dist60_low_pct_from_bars(bars)
+            if from_bars is not None:
+                item["dist60LowPct"] = from_bars
+        if short_like:
+            warn = row.get("离底过远提醒")
+            if warn in (True, 1, "True", "1", "true") or (
+                item.get("dist60LowPct") is not None
+                and item["dist60LowPct"] > WARN_DIST60_LOW_PCT
+            ):
+                item["warnFarFromLow"] = True
         if "箱体底" in row and pd.notna(row["箱体底"]):
             item["boxBottom"] = float(row["箱体底"])
         if "箱体顶" in row and pd.notna(row["箱体顶"]):
