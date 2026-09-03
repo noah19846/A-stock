@@ -1,29 +1,21 @@
 """
-一键日更：更新 K 线 → 中长线 → 宝藏观察 → 短线 → 无量首板 → 热门板块 → 写入 signal_pool / hot_sectors
+一键日更：更新 K 线 → 筛选 → 写入 signal_pool / hot_sectors
 
 目录结构：
-  signal_pool/
-    YYYY-MM-DD/
-      meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/ / base/ / relaunch/  # final
-      preview/
-        meta.json / index.html / long/ / treasure/ / short/ / scalp/ / board/ / base/ / relaunch/
-  hot_sectors/
-    YYYY-MM-DD/
-      meta.json / index.html / roles.json / sectors.csv
-      preview/ …
+  signal_pool/YYYY-MM-DD/
+    meta.json / index.html / long/ / short/ / watch/ / scalp/ / …
+  hot_sectors/YYYY-MM-DD/
+    meta.json / index.html / roles.json / …
+
+模式：
+  默认（正式）：刷盘中价，完整生成 HTML（下单看这份）
+  --close：收盘重拉 K 线；不生成 HTML；短线只筛「观察」增量入观察簿
 
 用法：
   .venv/bin/python run_daily_pool.py
-  .venv/bin/python run_daily_pool.py --preview
-  .venv/bin/python run_daily_pool.py --treasure-only
-  .venv/bin/python run_daily_pool.py --board-only
-  .venv/bin/python run_daily_pool.py --base-only
-  .venv/bin/python run_daily_pool.py --relaunch-only
-  .venv/bin/python run_daily_pool.py --hot-only
-  .venv/bin/python run_daily_pool.py --skip-update
+  .venv/bin/python run_daily_pool.py --close
   .venv/bin/python run_daily_pool.py --rebuild-html
-  # 用已存盘中截面回放筛选（新策略补历史 preview）
-  .venv/bin/python run_daily_pool.py --preview --from-preview-snapshot --base-only --from-date 2026-08-01 --to-date 2026-08-21
+  .venv/bin/python run_daily_pool.py --from-intraday-snapshot --from-date … --to-date …
 """
 
 from __future__ import annotations
@@ -145,7 +137,21 @@ def resolve_asof() -> str:
     return str(pd.to_datetime(df["日期"]).max().date())
 
 
-def run_update(force: bool = False, *, quality: str = "final") -> None:
+def bar_quality_for_mode(mode: str) -> str:
+    """日线质量档：正式跑盘中价=intraday，收盘跑=close。"""
+    return "close" if mode == "close" else "intraday"
+
+
+def normalize_bar_quality(quality: str) -> str:
+    q = str(quality or "").strip()
+    if q in ("preview", "intraday"):
+        return "intraday"
+    if q in ("final", "close"):
+        return "close"
+    return q
+
+
+def run_update(force: bool = False, *, quality: str = "close") -> None:
     cmd = [PYTHON, str(ROOT / "update_daily.py")]
     if force:
         cmd.append("--force")
@@ -154,7 +160,7 @@ def run_update(force: bool = False, *, quality: str = "final") -> None:
         cmd.append("--sqlite")
     log(f"[1/4] 更新日线: {' '.join(cmd)}  quality={quality}")
     subprocess.run(cmd, cwd=str(ROOT), check=True)
-    # 成功后记下「哪一档」写入了当日，避免把 preview 当成收盘正式数据
+    # 成功后记下「哪一档」写入了当日，避免把盘中价当成收盘价
     asof = None
     try:
         from update_daily import latest_trade_date
@@ -163,26 +169,26 @@ def run_update(force: bool = False, *, quality: str = "final") -> None:
     except Exception:
         asof = datetime.now().strftime("%Y-%m-%d")
     write_last_update(asof, quality)
-    if quality == "preview":
-        capture_preview_snapshot(asof)
+    if quality == "intraday":
+        capture_intraday_snapshot(asof)
 
 
-def capture_preview_snapshot(trade_date: str) -> dict:
+def capture_intraday_snapshot(trade_date: str) -> dict:
     """把当日盘中写入的 daily_bars 另存一份，供以后新策略回放。"""
     import daily_db
 
-    info = daily_db.save_preview_snapshot(
+    info = daily_db.save_intraday_snapshot(
         trade_date,
         snapshot_at=datetime.now().isoformat(timespec="seconds"),
-        source="preview",
+        source="intraday",
     )
     if info.get("ok"):
         log(
-            f"  preview 截面已存: {info['trade_date']} @ {info['snapshot_at']}  "
+            f"  盘中截面已存: {info['trade_date']} @ {info['snapshot_at']}  "
             f"n={info['n_bars']}"
         )
     else:
-        log(f"  preview 截面未存: {info.get('error') or info}")
+        log(f"  盘中截面未存: {info.get('error') or info}")
     return info
 
 
@@ -202,7 +208,7 @@ def write_last_update(trade_date: str, quality: str) -> None:
     UPDATE_META.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "trade_date": str(trade_date)[:10],
-        "quality": quality,  # preview | final
+        "quality": normalize_bar_quality(quality),  # intraday | close
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     UPDATE_META.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -212,17 +218,17 @@ def write_last_update(trade_date: str, quality: str) -> None:
 def should_skip_daily_update(mode: str) -> bool:
     """是否跳过日更。
 
-    仅看「日期」不够：14:30 preview 用的是盘中截面，日期已是当日但并非收盘准确价。
+    仅看「日期」不够：正式盘中价日期已是当日但并非收盘准确价。
     规则：
-      - preview：不自动跳过（每次预览都刷盘中价）
-      - final：仅当标记为同日且 quality=final 时跳过（同日 preview 不能顶替）
+      - official：不自动跳过（每次都刷盘中价）
+      - close：仅当标记为同日且 quality=close 时跳过（同日盘中价不能顶替）
     """
     info = read_last_update()
     if not info:
         return False
-    if mode != "final":
+    if mode != "close":
         return False
-    if str(info.get("quality") or "") != "final":
+    if normalize_bar_quality(str(info.get("quality") or "")) != "close":
         return False
     mx = str(info.get("trade_date") or "")[:10]
     if not mx:
@@ -235,15 +241,10 @@ def should_skip_daily_update(mode: str) -> bool:
         return mx >= datetime.now().strftime("%Y-%m-%d")
 
 
-def load_hot_industries(asof: str, mode: str = "final") -> dict[str, str]:
+def load_hot_industries(asof: str, mode: str = "official") -> dict[str, str]:
     """当日热门板块 industry → 档位（趋势热 / 超短反抽）。"""
-    base = HOT_ROOT / asof
-    if mode == "preview":
-        paths = [base / "preview" / "roles.json", base / "roles.json"]
-    else:
-        paths = [base / "roles.json", base / "preview" / "roles.json"]
-    path = next((p for p in paths if p.exists()), None)
-    if path is None:
+    path = HOT_ROOT / asof / "roles.json"
+    if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -268,8 +269,7 @@ def load_hot_industries(asof: str, mode: str = "final") -> dict[str, str]:
 def hot_map_for_day_dir(day_dir: Path, asof: str | None) -> dict[str, str]:
     if not asof:
         return {}
-    mode = "preview" if day_dir.name == "preview" else "final"
-    return load_hot_industries(asof, mode)
+    return load_hot_industries(asof, "official")
 
 
 def _dist60_low_pct_from_bars(bars: list[dict], *, min_bars: int = 60) -> float | None:
@@ -475,10 +475,7 @@ def list_pool_html_jobs() -> list[tuple[str, str, Path]]:
         if len(asof) != 10 or asof[4] != "-":
             continue
         if (day / "index.html").exists():
-            jobs.append((asof, "final", day))
-        prev = day / "preview"
-        if (prev / "index.html").exists():
-            jobs.append((asof, "preview", prev))
+            jobs.append((asof, "live", day))
     return jobs
 
 
@@ -519,7 +516,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
         },
     )
     log(
-        f"  重刷 {asof} {day_dir.name if day_dir.name == 'preview' else 'final'}: "
+        f"  重刷 {asof}: "
         f"long={len(long_stocks)} short={len(short_stocks)} watch={len(watch_stocks)} "
         f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
         f"board={len(board_stocks)} base={len(base_stocks)} "
@@ -1202,18 +1199,18 @@ def write_meta(
         "base": base_stat or {},
         "relaunch": relaunch_stat or {},
         "workflow": {
-            "preview": "收盘前预筛：强制拉盘中截面写入库，标记 quality=preview；HTML 在 preview/；同时另存 preview_bars 截面",
-            "final": "收盘后正式：强制重拉覆盖当日 bar，标记 quality=final；仅当已有同日 final 才跳过日更；不覆盖 preview 截面",
-            "note": "不能用「库最大日期=今日」判断准确——preview 也会写成今日",
-            "replay": "新策略补历史：--preview --from-preview-snapshot --from-date … --to-date …",
+            "official": "正式：刷盘中价 quality=intraday；完整 HTML 写入 signal_pool/日期/（交易入口）",
+            "close": "收盘：重拉 quality=close；不生成 HTML；短线筛观察并增量入观察簿（不覆盖已在册）",
+            "note": "不能用「库最大日期=今日」判断准确——正式盘中价也会写成今日",
+            "replay": "新策略补历史：--from-intraday-snapshot --from-date … --to-date …",
         },
     }
     try:
         import daily_db
 
-        snap = daily_db.get_preview_snapshot(asof)
+        snap = daily_db.get_intraday_snapshot(asof)
         if snap:
-            meta["preview_snapshot"] = snap
+            meta["intraday_snapshot"] = snap
     except Exception:
         pass
     path = day_dir / "meta.json"
@@ -1230,22 +1227,19 @@ def write_meta(
     log(f"[4/4] meta → {path}")
 
 
-def pool_day_dir(asof: str, mode: str = "final") -> Path:
-    """final → signal_pool/日期/；preview → signal_pool/日期/preview/。"""
-    base = POOL_ROOT / asof
-    if mode == "preview":
-        return base / "preview"
-    return base
+def pool_day_dir(asof: str, mode: str = "official") -> Path:
+    """信号池目录：signal_pool/日期/。"""
+    return POOL_ROOT / asof
 
 
-def run_hot_sectors(asof: str, *, mode: str = "final") -> dict:
-    """生成 hot_sectors/YYYY-MM-DD[/preview]/ 角色 HTML。"""
+def run_hot_sectors(asof: str, *, mode: str = "official") -> dict:
+    """生成 hot_sectors/YYYY-MM-DD/ 角色 HTML（与信号池一样不再分子目录）。"""
     import gen_hot_sector_html as ghs
 
     log("[3b/4] 热门板块角色（趋势热 + 超短反抽）…")
     t0 = time.time()
     # 日线已由 run_one_day / 区间预载完成，这里直接用缓存
-    meta = ghs.generate(asof=asof, mode=mode, log_fn=log)
+    meta = ghs.generate(asof=asof, mode="official", log_fn=log)
     log(
         f"  hot: 趋势{meta.get('n_trend', 0)} / 超短{meta.get('n_burst', 0)} / "
         f"可买类{meta.get('n_buyish', 0)} → {meta.get('index_html')} "
@@ -1257,7 +1251,7 @@ def run_hot_sectors(asof: str, *, mode: str = "final") -> dict:
 def run_one_day(
     asof: str,
     *,
-    mode: str = "final",
+    mode: str = "official",
     do_long: bool = True,
     do_short: bool = True,
     do_treasure: bool = True,
@@ -1271,7 +1265,49 @@ def run_one_day(
     preload: bool = True,
     update_watch_book: bool = True,
 ) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
-    """生成单日 signal_pool（+可选 hot_sectors）。返回含 relaunch。"""
+    """生成单日 signal_pool（+可选 hot_sectors）。
+
+    official：完整筛选并写入 signal_pool/日期/ HTML（交易入口）。
+    close：不生成 HTML，仅短线筛「观察」并增量入观察簿。
+    """
+    empty = ({}, {}, {}, {}, {}, {}, {}, {})
+
+    if mode == "close":
+        log(f"收盘 {asof}：不生成信号池 HTML（交易看正式写入的日期目录）")
+        if preload:
+            preload_daily(asof=asof)
+        if not do_short:
+            log("  跳过短线，无观察可入簿")
+            return empty
+        import tempfile
+
+        import watch_book as wb
+
+        with tempfile.TemporaryDirectory(prefix="close_watch_") as tmp:
+            tmp_dir = Path(tmp)
+            log("[收盘] 短线扫描（仅用于观察簿增量入簿，不落交易目录）…")
+            _short_stat, short_stocks, _scalp_stat, _scalp_stocks = run_short(
+                tmp_dir,
+                asof=asof,
+                bands_path=short_bands,
+                strategy_ids=short_strategy_ids,
+                scalp_strategy_ids=[],  # 收盘不需要 scalp 输出
+            )
+            n_watch = sum(
+                1
+                for s in short_stocks
+                if str(s.get("advice") or "") == "观察"
+            )
+            log(f"  当日短线观察候选 {n_watch} 只")
+            if update_watch_book:
+                wb.enroll_new_only(asof, short_stocks=short_stocks)
+            else:
+                log("  跳过观察簿（--skip-watch-book）")
+        live = pool_day_dir(asof)
+        if (live / "index.html").exists():
+            log(f"  交易 HTML：{live / 'index.html'}")
+        return empty
+
     day_dir = pool_day_dir(asof, mode)
     day_dir.mkdir(parents=True, exist_ok=True)
     log(f"输出目录: {day_dir}  mode={mode}")
@@ -1419,7 +1455,11 @@ def run_one_day(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="日更 + 长/短线信号池 → signal_pool")
-    parser.add_argument("--preview", action="store_true")
+    parser.add_argument(
+        "--close",
+        action="store_true",
+        help="收盘：重拉 K 线 + 观察增量入簿，不生成交易 HTML",
+    )
     parser.add_argument("--skip-update", action="store_true")
     parser.add_argument(
         "--rebuild-html",
@@ -1429,7 +1469,7 @@ def main() -> None:
     parser.add_argument(
         "--force-update",
         action="store_true",
-        help="强制重拉当日日线并按当前 mode（preview/final）重写质量标记",
+        help="强制重拉当日日线并按当前 mode（official/close）重写质量标记",
     )
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
@@ -1451,12 +1491,12 @@ def main() -> None:
     parser.add_argument(
         "--watch-book",
         action="store_true",
-        help="强制更新观察簿（含 --from-date/--from-preview-snapshot 回放）",
+        help="强制更新观察簿（含 --from-date/--from-intraday-snapshot 回放）",
     )
     parser.add_argument(
-        "--from-preview-snapshot",
+        "--from-intraday-snapshot",
         action="store_true",
-        help="用已存盘中截面回放筛选（需 --preview；自动跳过日更；无截面的交易日跳过）",
+        help="用已存盘中截面回放筛选（正式模式；自动跳过日更；无截面的交易日跳过）",
     )
     parser.add_argument("--date", default="")
     parser.add_argument(
@@ -1493,10 +1533,10 @@ def main() -> None:
         log(f"完成，重刷 {n} 份 HTML，耗时 {time.time() - t0:.0f}s")
         return
 
-    mode = "preview" if args.preview else "final"
-    use_snap = bool(args.from_preview_snapshot)
-    if use_snap and mode != "preview":
-        raise SystemExit("--from-preview-snapshot 需配合 --preview（写入 preview/ 目录）")
+    mode = "close" if args.close else "official"
+    use_snap = bool(args.from_intraday_snapshot)
+    if use_snap and mode != "official":
+        raise SystemExit("--from-intraday-snapshot 不能与 --close 同时使用")
 
     do_long = True
     do_short = True
@@ -1581,7 +1621,7 @@ def main() -> None:
 
     from_d = args.from_date.strip()
     to_d = args.to_date.strip()
-    # 区间/截面回放默认不写观察簿，避免历史日把「在册」弄脏；单日 preview/final 默认写
+    # 区间/截面回放默认不写观察簿，避免历史日把「在册」弄脏；单日正式/收盘默认写
     update_watch_book = bool(args.watch_book) or (
         not args.skip_watch_book and not use_snap and not (from_d or to_d)
     )
@@ -1590,10 +1630,10 @@ def main() -> None:
         import daily_cache
 
         if use_snap:
-            info = daily_cache.set_preview_overlay(d)
+            info = daily_cache.set_intraday_overlay(d)
             if not info:
                 msg = (
-                    f"无 preview 截面 {d}（查看：.venv/bin/python daily_db.py snapshots）"
+                    f"无盘中截面 {d}（查看：.venv/bin/python daily_db.py snapshots）"
                 )
                 if preload:
                     raise SystemExit(msg)
@@ -1622,7 +1662,7 @@ def main() -> None:
             )
         finally:
             if use_snap:
-                daily_cache.set_preview_overlay(None)
+                daily_cache.set_intraday_overlay(None)
 
     if from_d or to_d:
         if not (from_d and to_d):
@@ -1630,7 +1670,7 @@ def main() -> None:
         if use_snap or not args.skip_update:
             log(
                 "[1/4] 区间回填模式，自动跳过日线更新"
-                + ("（回放 preview 截面）" if use_snap else "（可用 --skip-update 显式）")
+                + ("（回放盘中截面）" if use_snap else "（可用 --skip-update 显式）")
             )
         else:
             log("[1/4] 跳过日线更新")
@@ -1667,21 +1707,21 @@ def main() -> None:
 
     if use_snap:
         args.skip_update = True
-        log("[1/4] 回放 preview 截面，跳过日线更新")
+        log("[1/4] 回放盘中截面，跳过日线更新")
     elif not args.skip_update:
+        quality = bar_quality_for_mode(mode)
         if args.force_update:
-            # 强制重拉并按当前 mode 记质量档
-            run_update(force=True, quality=mode)
+            run_update(force=True, quality=quality)
         elif should_skip_daily_update(mode):
             info = read_last_update()
             log(
-                f"[1/4] 跳过日线更新：已有同日 final"
+                f"[1/4] 跳过日线更新：已有同日收盘"
                 f"（{info.get('trade_date')} @ {info.get('updated_at')}；"
-                f"preview 不会跳过，可用 --force-update 强刷）"
+                f"正式盘中不会跳过，可用 --force-update 强刷）"
             )
         else:
-            # preview / 未做过 final：必须 force，才能覆盖盘中写入的当日 bar
-            run_update(force=True, quality=mode)
+            # 正式 / 未做过收盘：必须 force，才能覆盖盘中写入的当日 bar
+            run_update(force=True, quality=quality)
     else:
         log("[1/4] 跳过日线更新")
 
@@ -1689,9 +1729,15 @@ def main() -> None:
     asof = args.date.strip() or resolve_asof()
     _, _, _, _, hot_stat, _, _, _ = run_day(asof, preload=True)
     log(f"完成，耗时 {time.time() - t0:.0f}s")
-    if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
+    if mode == "official" and (
+        do_long or do_short or do_treasure or do_board or do_base or do_relaunch
+    ):
         log(f"打开信号池: {pool_day_dir(asof, mode) / 'index.html'}")
-    if do_hot and hot_stat.get("index_html"):
+    elif mode == "close":
+        live = pool_day_dir(asof)
+        if (live / "index.html").exists():
+            log(f"交易 HTML: {live / 'index.html'}")
+    if do_hot and mode == "official" and hot_stat.get("index_html"):
         log(f"打开热门板块: {hot_stat['index_html']}")
 
 

@@ -5,7 +5,7 @@
 - 否则：多进程并行读 CSV
 - 一次性算好后复权/均线；只保留近 MAX_BARS 根
 - get(code, asof=...) 内存切片，不再读盘
-- set_preview_overlay(date)：用已存盘中截面替换当日 bar，供新策略回放
+- set_intraday_overlay(date)：用已存盘中截面替换当日 bar，供新策略回放
 - 同日预载结果可落盘 data/db/preload_cache.pkl，二次启动秒级命中
 """
 
@@ -45,11 +45,11 @@ _PRELOADED = False
 _SOURCE: str = ""  # "sqlite" | "csv" | ""
 _CACHE_KEY: str = ""
 
-# 回放盘中截面：get(asof=截面日) 时用 preview_bars 替换当日 bar
-_PREVIEW_DATE: str | None = None
-_PREVIEW_AT: str | None = None
-_PREVIEW_BARS: dict[str, dict] | None = None
-_PREVIEW_PATCHED: dict[str, pd.DataFrame | None] = {}
+# 回放盘中截面：get(asof=截面日) 时用 intraday_bars 替换当日 bar
+_INTRADAY_DATE: str | None = None
+_INTRADAY_AT: str | None = None
+_INTRADAY_BARS: dict[str, dict] | None = None
+_INTRADAY_PATCHED: dict[str, pd.DataFrame | None] = {}
 
 
 def clear() -> None:
@@ -58,7 +58,7 @@ def clear() -> None:
     _PRELOADED = False
     _SOURCE = ""
     _CACHE_KEY = ""
-    set_preview_overlay(None)
+    set_intraday_overlay(None)
 
 
 def use_sqlite() -> bool:
@@ -158,51 +158,51 @@ def _prepare_en(g: pd.DataFrame) -> pd.DataFrame | None:
     )
 
 
-def set_preview_overlay(trade_date: str | None) -> dict | None:
-    """筛选回放：指定交易日用已存 preview 截面替换当日 OHLC。None 关闭。"""
-    global _PREVIEW_DATE, _PREVIEW_AT, _PREVIEW_BARS
-    _PREVIEW_PATCHED.clear()
+def set_intraday_overlay(trade_date: str | None) -> dict | None:
+    """筛选回放：指定交易日用已存盘中截面替换当日 OHLC。None 关闭。"""
+    global _INTRADAY_DATE, _INTRADAY_AT, _INTRADAY_BARS
+    _INTRADAY_PATCHED.clear()
     if not trade_date:
-        _PREVIEW_DATE = None
-        _PREVIEW_AT = None
-        _PREVIEW_BARS = None
+        _INTRADAY_DATE = None
+        _INTRADAY_AT = None
+        _INTRADAY_BARS = None
         return None
     import daily_db
 
-    meta = daily_db.get_preview_snapshot(trade_date)
+    meta = daily_db.get_intraday_snapshot(trade_date)
     if not meta:
-        _PREVIEW_DATE = None
-        _PREVIEW_AT = None
-        _PREVIEW_BARS = None
+        _INTRADAY_DATE = None
+        _INTRADAY_AT = None
+        _INTRADAY_BARS = None
         return None
-    df = daily_db.load_preview_bars(trade_date)
+    df = daily_db.load_intraday_bars(trade_date)
     bars: dict[str, dict] = {}
     if not df.empty:
         for rec in df.to_dict("records"):
             code = str(rec["code"]).zfill(6)
             bars[code] = rec
-    _PREVIEW_DATE = str(meta["trade_date"])[:10]
-    _PREVIEW_AT = str(meta["snapshot_at"])
-    _PREVIEW_BARS = bars
+    _INTRADAY_DATE = str(meta["trade_date"])[:10]
+    _INTRADAY_AT = str(meta["snapshot_at"])
+    _INTRADAY_BARS = bars
     return {**meta, "n_loaded": len(bars)}
 
 
-def preview_overlay_info() -> dict | None:
-    if not _PREVIEW_DATE:
+def intraday_overlay_info() -> dict | None:
+    if not _INTRADAY_DATE:
         return None
     return {
-        "trade_date": _PREVIEW_DATE,
-        "snapshot_at": _PREVIEW_AT,
-        "n_bars": len(_PREVIEW_BARS or {}),
+        "trade_date": _INTRADAY_DATE,
+        "snapshot_at": _INTRADAY_AT,
+        "n_bars": len(_INTRADAY_BARS or {}),
     }
 
 
-def _apply_preview_bar(df: pd.DataFrame, code: str) -> pd.DataFrame | None:
-    """把 asof 日换成 preview 截面；该票无截面则去掉当日（避免漏用收盘价）。"""
-    assert _PREVIEW_DATE
-    cutoff = pd.Timestamp(_PREVIEW_DATE)
+def _apply_intraday_bar(df: pd.DataFrame, code: str) -> pd.DataFrame | None:
+    """把 asof 日换成盘中截面；该票无截面则去掉当日（避免漏用收盘价）。"""
+    assert _INTRADAY_DATE
+    cutoff = pd.Timestamp(_INTRADAY_DATE)
     out = df.loc[df["日期"] <= cutoff].copy()
-    bar = (_PREVIEW_BARS or {}).get(code)
+    bar = (_INTRADAY_BARS or {}).get(code)
     if bar is None:
         out = out.loc[out["日期"] < cutoff].reset_index(drop=True)
         return _recompute_derived(out)
@@ -460,11 +460,11 @@ def get(code: str, asof: str | None = None) -> pd.DataFrame | None:
     df = _CACHE.get(code)
     if df is None:
         return None
-    if asof and _PREVIEW_DATE and str(asof)[:10] == _PREVIEW_DATE:
-        if code in _PREVIEW_PATCHED:
-            return _PREVIEW_PATCHED[code]
-        patched = _apply_preview_bar(df, code)
-        _PREVIEW_PATCHED[code] = patched
+    if asof and _INTRADAY_DATE and str(asof)[:10] == _INTRADAY_DATE:
+        if code in _INTRADAY_PATCHED:
+            return _INTRADAY_PATCHED[code]
+        patched = _apply_intraday_bar(df, code)
+        _INTRADAY_PATCHED[code] = patched
         return patched
     if asof:
         cutoff = pd.Timestamp(asof)

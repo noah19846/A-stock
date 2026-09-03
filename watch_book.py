@@ -475,6 +475,88 @@ def review_day(
     }
 
 
+def enroll_new_only(
+    asof: str,
+    *,
+    short_stocks: list[dict] | None = None,
+    bands_path: Path | None = None,
+    db_path: Path | None = None,
+    kind: str = KIND,
+) -> dict:
+    """仅把当日短线「观察」增量入簿：已在册 open 不动、不复检升降级。"""
+    asof = str(asof)[:10]
+    bands = load_bands(bands_path or BANDS)
+    name_map, ind_map = load_maps()
+
+    today_watch: list[tuple[str, str]] = []
+    if short_stocks:
+        for s in short_stocks:
+            if str(s.get("advice") or s.get("stage") or "") != "观察":
+                continue
+            c = str(s.get("code") or "").zfill(6)
+            today_watch.append((c, str(s.get("name") or "")))
+
+    conn = _conn(db_path)
+    enrolled = 0
+    skipped = 0
+    try:
+        open_codes = {
+            str(r["code"]).zfill(6) for r in open_rows(conn, kind=kind)
+        }
+        for code, name_hint in today_watch:
+            if code in open_codes:
+                skipped += 1
+                continue
+            v, feat, name = _evaluate_code(code, asof, bands, name_map, ind_map)
+            if v is None or feat is None:
+                skipped += 1
+                continue
+            name = name or name_hint or v.name
+            reason = opened_reason_for(feat, v.stage, bands)
+            conn.execute(
+                """
+                INSERT INTO watch_book(
+                  code, kind, opened_date, name, opened_reason, status,
+                  last_review, last_stage, last_note, days_open
+                ) VALUES (?,?,?,?,?,'open',?,?,?,?)
+                """,
+                (
+                    code,
+                    kind,
+                    asof,
+                    name,
+                    reason,
+                    asof,
+                    v.stage,
+                    f"收盘增量入簿（{reason}）",
+                    1,
+                ),
+            )
+            _upsert_review(
+                conn,
+                review_date=asof,
+                code=code,
+                kind=kind,
+                opened_date=asof,
+                action="enroll",
+                stage=v.stage,
+                note=f"收盘增量入簿（{reason}）",
+                opened_reason=reason,
+                feat=feat,
+                hard=float(v.hard_score) if v.hard_score == v.hard_score else None,
+                soft=float(v.score) if v.score == v.score else None,
+            )
+            open_codes.add(code)
+            enrolled += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+    export_snapshots(asof, db_path=db_path, kind=kind)
+    log(f"  观察簿增量入簿: 新入 {enrolled} / 已在册跳过 {skipped}")
+    return {"enroll": enrolled, "skip": skipped}
+
+
 def export_snapshots(
     asof: str | None = None,
     *,
@@ -658,7 +740,6 @@ def main() -> None:
         action="store_true",
         help="从 signal_pool/日期/short/signals.csv 取当日观察入簿",
     )
-    p_r.add_argument("--preview", action="store_true", help="读 preview 目录的 short")
     p_r.add_argument("--bands", default=str(BANDS))
 
     sub.add_parser("status", help="打印当前 open")
@@ -677,8 +758,7 @@ def main() -> None:
     short_stocks: list[dict] | None = None
     day_dir = None
     if args.from_pool:
-        base = ROOT / "signal_pool" / args.date
-        day_dir = base / "preview" if args.preview else base
+        day_dir = ROOT / "signal_pool" / args.date
         sig = day_dir / "short" / "signals.csv"
         if sig.exists():
             df = pd.read_csv(sig, dtype={"code": str})

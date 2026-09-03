@@ -1,11 +1,11 @@
 PYTHON := .venv/bin/python
 
-.PHONY: help daily preview hot forward trades trade-open trade-summary py
+.PHONY: help daily close hot forward trades trade-open trade-summary py
 
 help:
 	@echo "常用命令："
-	@echo "  make daily                 正式日更"
-	@echo "  make preview               盘中预览"
+	@echo "  make daily                 正式：刷盘中价并生成交易 HTML"
+	@echo "  make close                 收盘：更新 K 线 + 观察增量入簿（不生成 HTML）"
 	@echo "  make hot                   只生成热门板块"
 	@echo "  make forward ARGS='...'    选股后续收益报告"
 	@echo "  make trades ARGS='...'     交易台账命令"
@@ -16,8 +16,8 @@ help:
 daily:
 	$(PYTHON) run_daily_pool.py $(ARGS)
 
-preview:
-	$(PYTHON) run_daily_pool.py --preview $(ARGS)
+close:
+	$(PYTHON) run_daily_pool.py --close $(ARGS)
 
 hot:
 	$(PYTHON) run_daily_pool.py --hot-only $(ARGS)

@@ -24,11 +24,9 @@ LOOKBACK = 20
 MIN_MEMBERS = 5
 
 
-def hot_day_dir(asof: str, mode: str = "final") -> Path:
-    base = HOT_ROOT / asof
-    if mode == "preview":
-        return base / "preview"
-    return base
+def hot_day_dir(asof: str, mode: str = "official") -> Path:
+    """热门板块目录：hot_sectors/日期/。"""
+    return HOT_ROOT / asof
 
 
 def load_stock_frame(asof: str | None) -> tuple[pd.DataFrame, str]:
@@ -873,12 +871,12 @@ def generate(
     *,
     asof: str | None = None,
     out_dir: Path | None = None,
-    mode: str = "final",
+    mode: str = "official",
     log_fn=print,
 ) -> dict:
     """
     生成热门板块角色 HTML/JSON/CSV。
-    默认写入 hot_sectors/YYYY-MM-DD[/preview]/。
+    默认写入 hot_sectors/YYYY-MM-DD/。
     返回 meta 摘要。
     """
     import rally_buy_screener as rbs
@@ -964,12 +962,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="热门行业角色 HTML → hot_sectors/")
     ap.add_argument("--asof", default="")
     ap.add_argument("--out", default="", help="输出目录（默认 hot_sectors/YYYY-MM-DD）")
-    ap.add_argument("--preview", action="store_true")
     args = ap.parse_args()
     asof = args.asof.strip() or None
-    mode = "preview" if args.preview else "final"
     out = Path(args.out) if args.out.strip() else None
-    generate(asof=asof, out_dir=out, mode=mode)
+    generate(asof=asof, out_dir=out, mode="official")
 
 
 if __name__ == "__main__":

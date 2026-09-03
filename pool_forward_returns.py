@@ -1,24 +1,24 @@
 """
 信号池 / 热门推荐 → 次日起逐日涨跌幅（HTML）
 
-每个选股日六张独立表（页内 tab）：
+每个选股日七张独立表（页内 tab）：
   1) 短线可短打
-  2) 长线可买入
-  3) 无量首板续板候选
-  4) 底部启动可买入
-  5) 板后重启可买入
-  6) 热门可买 / 轻仓可买
+  2) 待观察（专门观察簿，按选股日在册）
+  3) 长线可买入
+  4) 无量首板续板候选
+  5) 底部启动可买入
+  6) 板后重启可买入
+  7) 热门可买 / 轻仓可买
 
 选出日 T 的名单，打印 T 之后每个交易日的涨跌幅，直到日线最新。
 默认从最早有信号池的日期起，按选股日分段生成一张 HTML。
+数据来自 signal_pool/日期/。
 
 用法：
   .venv/bin/python pool_forward_returns.py
   .venv/bin/python pool_forward_returns.py 7-24
   .venv/bin/python pool_forward_returns.py 2026-08-13 --only
   .venv/bin/python pool_forward_returns.py 8-13 --stdout
-  .venv/bin/python pool_forward_returns.py 8-13 --stdout --preview   # 终端只打 preview
-HTML 固定含「正式 / Preview」两个 tab。
 """
 
 from __future__ import annotations
@@ -77,21 +77,16 @@ def list_pool_dates() -> list[str]:
     )
 
 
-def pool_day_dir(pick_date: str, preview: bool) -> Path | None:
+def pool_day_dir(pick_date: str) -> Path | None:
+    """读 signal_pool/日期/。"""
     base = POOL_ROOT / pick_date
-    path = base / "preview" if preview else base
-    return path if path.is_dir() else None
+    return base if base.is_dir() else None
 
 
-def hot_day_dir(pick_date: str, preview: bool) -> Path | None:
+def hot_day_dir(pick_date: str) -> Path | None:
+    """读 hot_sectors/日期/。"""
     base = HOT_ROOT / pick_date
-    path = base / "preview" if preview else base
-    if path.is_dir():
-        return path
-    # preview 指定时若无 preview，可回退 final
-    if preview and base.is_dir():
-        return base
-    return path if path.is_dir() else None
+    return base if base.is_dir() else None
 
 
 def _read_signal_csv(path: Path) -> pd.DataFrame:
@@ -111,8 +106,77 @@ def _read_signal_csv(path: Path) -> pd.DataFrame:
     return df
 
 
-def load_short_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = pool_day_dir(pick_date, preview)
+def _watch_open_asof(pick_date: str) -> pd.DataFrame:
+    """观察簿在选股日仍在册的票（含当日新入、当日尚未关闭）。"""
+    try:
+        import daily_db
+    except Exception:
+        return pd.DataFrame()
+    if not daily_db.db_exists():
+        return pd.DataFrame()
+    conn = daily_db.connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT code, name, opened_date, opened_reason, last_note, status
+            FROM watch_book
+            WHERE opened_date <= ?
+              AND (status = 'open'
+                   OR closed_date IS NULL
+                   OR closed_date > ?)
+            """,
+            (pick_date, pick_date),
+        ).fetchall()
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        code = str(r["code"] or "").zfill(6)
+        if not code or code == "000000":
+            continue
+        reason = str(r["opened_reason"] or "")
+        note = str(r["last_note"] or "").strip()
+        detail = note or reason or "观察簿"
+        out.append(
+            {
+                "code": code,
+                "name": str(r["name"] or ""),
+                "source": "待观察",
+                "src_detail": detail,
+            }
+        )
+    return pd.DataFrame(out)
+
+
+def load_watch_names(pick_date: str) -> pd.DataFrame:
+    """专门待观察池：当日 watch/signals.csv，没有则按观察簿还原当日在册。"""
+    parts: list[pd.DataFrame] = []
+    d = pool_day_dir(pick_date)
+    if d is not None:
+        wdf = _read_signal_csv(d / "watch" / "signals.csv")
+        if not wdf.empty:
+            w = wdf.copy()
+            w["source"] = "待观察"
+            if "when" in w.columns:
+                w["src_detail"] = w["when"].astype(str)
+            elif "opened_reason" in w.columns:
+                w["src_detail"] = w["opened_reason"].astype(str)
+            else:
+                w["src_detail"] = (
+                    w["stage"].astype(str) if "stage" in w.columns else "观察"
+                )
+            parts.append(w[["code", "name", "source", "src_detail"]])
+    if not parts:
+        book = _watch_open_asof(pick_date)
+        if not book.empty:
+            parts.append(book)
+    return _dedupe_picks(parts, {"待观察": 0})
+
+
+def load_short_buys(pick_date: str) -> pd.DataFrame:
+    d = pool_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     df = _read_signal_csv(d / "short" / "signals.csv")
@@ -128,8 +192,8 @@ def load_short_buys(pick_date: str, preview: bool) -> pd.DataFrame:
     return out[["code", "name", "source", "src_detail"]]
 
 
-def load_long_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = pool_day_dir(pick_date, preview)
+def load_long_buys(pick_date: str) -> pd.DataFrame:
+    d = pool_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     df = _read_signal_csv(d / "long" / "signals.csv")
@@ -145,8 +209,8 @@ def load_long_buys(pick_date: str, preview: bool) -> pd.DataFrame:
     return out[["code", "name", "source", "src_detail"]]
 
 
-def load_hot_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = hot_day_dir(pick_date, preview)
+def load_hot_buys(pick_date: str) -> pd.DataFrame:
+    d = hot_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     path = d / "roles.json"
@@ -212,8 +276,8 @@ def _dedupe_picks(parts: list[pd.DataFrame], rank: dict[str, int]) -> pd.DataFra
     return out.sort_values(["_k", "code"]).drop(columns=["_k"]).reset_index(drop=True)
 
 
-def load_board_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = pool_day_dir(pick_date, preview)
+def load_board_buys(pick_date: str) -> pd.DataFrame:
+    d = pool_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     df = _read_signal_csv(d / "board" / "signals.csv")
@@ -230,8 +294,8 @@ def load_board_buys(pick_date: str, preview: bool) -> pd.DataFrame:
     return out[["code", "name", "source", "src_detail"]]
 
 
-def load_base_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = pool_day_dir(pick_date, preview)
+def load_base_buys(pick_date: str) -> pd.DataFrame:
+    d = pool_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     df = _read_signal_csv(d / "base" / "signals.csv")
@@ -248,8 +312,8 @@ def load_base_buys(pick_date: str, preview: bool) -> pd.DataFrame:
     return out[["code", "name", "source", "src_detail"]]
 
 
-def load_relaunch_buys(pick_date: str, preview: bool) -> pd.DataFrame:
-    d = pool_day_dir(pick_date, preview)
+def load_relaunch_buys(pick_date: str) -> pd.DataFrame:
+    d = pool_day_dir(pick_date)
     if d is None:
         return pd.DataFrame()
     df = _read_signal_csv(d / "relaunch" / "signals.csv")
@@ -271,9 +335,9 @@ def as_picks(raw: pd.DataFrame, source: str) -> pd.DataFrame:
     return _dedupe_picks([raw], {source: 0})
 
 
-def load_hot_picks(pick_date: str, preview: bool) -> pd.DataFrame:
+def load_hot_picks(pick_date: str) -> pd.DataFrame:
     """hot_sectors：可买 / 轻仓可买。"""
-    raw = load_hot_buys(pick_date, preview)
+    raw = load_hot_buys(pick_date)
     if raw.empty:
         return pd.DataFrame(columns=["code", "name", "sources", "details"])
     return _dedupe_picks([raw], {"热门": 0})
@@ -477,27 +541,7 @@ def block_codes(block: dict) -> set[str]:
     return {r["code"] for r in block.get("rows") or []}
 
 
-def both_codes_by_date(
-    final_sections: list[dict], preview_sections: list[dict]
-) -> dict[str, dict[str, set[str]]]:
-    """选股日 → 来源 key → preview∩final 的代码。"""
-    prev_map: dict[str, dict[str, set[str]]] = {}
-    for s in preview_sections:
-        prev_map[s["pick_date"]] = {b["key"]: block_codes(b) for b in s.get("blocks") or []}
-    out: dict[str, dict[str, set[str]]] = {}
-    for s in final_sections:
-        d = s["pick_date"]
-        prev = prev_map.get(d, {})
-        out[d] = {
-            b["key"]: block_codes(b) & prev.get(b["key"], set())
-            for b in s.get("blocks") or []
-        }
-    return out
-
-
-def render_table_block(
-    block: dict, both: set[str]
-) -> str:
+def render_table_block(block: dict) -> str:
     cols: list[pd.Timestamp] = block["cols"]
     rows: list[dict] = block["rows"]
     day_sums = block["day_sums"]
@@ -519,16 +563,9 @@ def render_table_block(
     tbody = []
     for r in rows:
         code = r["code"]
-        is_both = code in both
-        badge = (
-            '<span class="badge-both" title="Preview 与正式名单均有">双</span>'
-            if is_both
-            else ""
-        )
-        tr_cls = ' class="both"' if is_both else ""
         cells = [
             f'<td class="code">{html.escape(code)}</td>',
-            f"<td>{name_link(code, str(r['name']))}{badge}</td>",
+            f"<td>{name_link(code, str(r['name']))}</td>",
             f'<td class="src" title="{html.escape(str(r["details"]))}">'
             f'{html.escape(str(r["details"] or r["sources"]))}</td>',
         ]
@@ -536,7 +573,7 @@ def render_table_block(
             for v in r["rets"]:
                 cells.append(_pct_cell(v))
             cells.append(_pct_cell(r["cum"]))
-        tbody.append(f"<tr{tr_cls}>" + "".join(cells) + "</tr>")
+        tbody.append("<tr>" + "".join(cells) + "</tr>")
 
     if cols:
         eq_cells = ['<td class="code">等权</td>', "<td>日均</td>", "<td></td>"]
@@ -550,8 +587,8 @@ def render_table_block(
         eq_cells.append(_pct_cell(cum - 1.0))
         tbody.append('<tr class="eq">' + "".join(eq_cells) + "</tr>")
         sub = (
-            f'{html.escape(meta)} · 次日 {html.escape(fmt_md(cols[0]))}…'
-            f'{html.escape(fmt_md(cols[-1]))} ({len(cols)}日)'
+            f"{html.escape(meta)} · 次日 {html.escape(fmt_md(cols[0]))}…"
+            f"{html.escape(fmt_md(cols[-1]))} ({len(cols)}日)"
         )
     else:
         sub = f"{html.escape(meta)} · 尚无次日涨跌"
@@ -565,37 +602,27 @@ def render_table_block(
     )
 
 
-def render_panel(
-    sections: list[dict],
-    *,
-    id_prefix: str,
-    both_by_date: dict[str, dict[str, set[str]]] | None = None,
-) -> tuple[str, str]:
+def render_panel(sections: list[dict], *, id_prefix: str = "day") -> tuple[str, str]:
     """返回 (侧栏导航 HTML, 主区 HTML)。"""
-    both_by_date = both_by_date or {}
     nav: list[str] = []
     body: list[str] = []
     for sec in sections:
         pick_date = sec["pick_date"]
         anchor = f"{id_prefix}-{pick_date}"
-        both_map = both_by_date.get(pick_date, {})
         blocks = sec.get("blocks") or []
         counts = {b["key"]: len(b["rows"]) for b in blocks}
-        n_both = len(set().union(*both_map.values())) if both_map else 0
         n_s = counts.get("short", 0)
+        n_w = counts.get("watch", 0)
         n_l = counts.get("long", 0)
         n_b = counts.get("board", 0)
         n_base = counts.get("base", 0)
         n_r = counts.get("relaunch", 0)
         n_h = counts.get("hot", 0)
-        both_nav = f" · 双{n_both}" if n_both else ""
         nav.append(
             f'<a href="#{anchor}">{html.escape(pick_date)} '
-            f'<span class="muted">短{n_s} 长{n_l} 板{n_b} 底{n_base} 启{n_r} 热{n_h}'
-            f"{html.escape(both_nav)}</span></a>"
+            f'<span class="muted">短{n_s} 观{n_w} 长{n_l} 板{n_b} 底{n_base} 启{n_r} 热{n_h}</span></a>'
         )
 
-        both_note = f" · 双出 {n_both}只" if n_both else ""
         tab_btns = []
         panes = []
         for i, b in enumerate(blocks):
@@ -609,10 +636,10 @@ def render_panel(
             pane_cls = "src-pane active" if i == 0 else "src-pane"
             panes.append(
                 f'<div class="{pane_cls}" data-src="{html.escape(key)}">'
-                f"{render_table_block(b, both_map.get(key, set()))}</div>"
+                f"{render_table_block(b)}</div>"
             )
         if not panes:
-            inner = '<p class="muted">无推荐、无 preview，或尚无次日涨跌数据</p>'
+            inner = '<p class="muted">无推荐或尚无次日涨跌数据</p>'
         else:
             inner = (
                 f'<div class="src-tabs" role="tablist">{"".join(tab_btns)}</div>'
@@ -620,28 +647,20 @@ def render_panel(
             )
         body.append(
             f'<section id="{anchor}" class="day">'
-            f"<h2>{html.escape(pick_date)}"
-            f'<span class="muted">{html.escape(both_note)}</span></h2>'
+            f"<h2>{html.escape(pick_date)}</h2>"
             f"{inner}</section>"
         )
     return "".join(nav), "".join(body)
 
 
 def render_html(
-    final_sections: list[dict],
-    preview_sections: list[dict],
+    sections: list[dict],
     *,
     start: str,
     end: str,
     generated_at: str,
 ) -> str:
-    both = both_codes_by_date(final_sections, preview_sections)
-    final_nav, final_body = render_panel(
-        final_sections, id_prefix="final", both_by_date=both
-    )
-    prev_nav, prev_body = render_panel(
-        preview_sections, id_prefix="preview", both_by_date=both
-    )
+    nav, body = render_panel(sections, id_prefix="day")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -660,8 +679,6 @@ def render_html(
   --down: #2e7d32;
   --nav-w: 220px;
   --accent: #1a56db;
-  --both: #b45309;
-  --both-bg: #fff7ed;
 }}
 * {{ box-sizing: border-box; }}
 body {{
@@ -679,21 +696,6 @@ body {{
 }}
 .nav h1 {{ font-size: 15px; margin: 0 0 8px; }}
 .nav .sub {{ font-size: 12px; color: var(--muted); margin-bottom: 12px; }}
-.tabs {{
-  display: flex; gap: 4px; margin-bottom: 12px;
-  background: #e8ebf0; padding: 3px; border-radius: 8px;
-}}
-.tabs button {{
-  flex: 1; border: 0; background: transparent; color: var(--muted);
-  padding: 7px 8px; border-radius: 6px; font-size: 13px; cursor: pointer;
-  font-family: inherit;
-}}
-.tabs button.active {{
-  background: #fff; color: var(--text); font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0,0,0,.06);
-}}
-.nav-dates {{ display: none; }}
-.nav-dates.active {{ display: block; }}
 .nav a {{
   display: block; padding: 6px 8px; border-radius: 6px;
   color: var(--text); text-decoration: none; font-size: 13px;
@@ -701,14 +703,11 @@ body {{
 .nav a:hover {{ background: #e8ebf0; }}
 .nav .muted {{ color: var(--muted); font-size: 11px; margin-left: 4px; }}
 main {{ flex: 1; padding: 20px 24px 48px; min-width: 0; }}
-.panel {{ display: none; }}
-.panel.active {{ display: block; }}
 .day {{
   background: var(--card); border: 1px solid var(--line);
   border-radius: 10px; padding: 14px 16px 18px; margin-bottom: 18px;
 }}
 .day h2 {{ font-size: 16px; margin: 0 0 10px; font-weight: 600; }}
-.day h2 .muted {{ font-weight: 400; font-size: 13px; color: var(--muted); }}
 .src-tabs {{
   display: flex; gap: 4px; margin: 0 0 10px; flex-wrap: wrap;
   background: #e8ebf0; padding: 3px; border-radius: 8px;
@@ -740,13 +739,6 @@ td.code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
 td.src {{ color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }}
 a.xq {{ color: var(--accent); text-decoration: none; }}
 a.xq:hover {{ text-decoration: underline; }}
-.badge-both {{
-  display: inline-block; margin-left: 6px; padding: 0 5px;
-  font-size: 11px; line-height: 1.5; border-radius: 4px;
-  color: var(--both); background: #ffedd5; border: 1px solid #fdba74;
-  vertical-align: middle;
-}}
-tr.both td {{ background: var(--both-bg); }}
 tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fafbfc; }}
 .muted {{ color: var(--muted); }}
 @media (max-width: 800px) {{
@@ -761,36 +753,14 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
     <h1>选股次日涨跌</h1>
     <div class="sub">{html.escape(start)} → {html.escape(end)}<br/>
     每日六表：短线 / 长线 / 无量首板 / 底部启动 / 板后重启 / 热门<br/>
-    <span class="badge-both">双</span> = Preview 与正式均入选 · 名称点进雪球<br/>
+    数据来自信号池日期目录 · 名称点进雪球<br/>
     生成 {html.escape(generated_at)}</div>
-    <div class="tabs" role="tablist">
-      <button type="button" class="active" data-tab="final">正式</button>
-      <button type="button" data-tab="preview">Preview</button>
-    </div>
-    <div class="nav-dates active" id="nav-final">{final_nav}</div>
-    <div class="nav-dates" id="nav-preview">{prev_nav}</div>
+    <div class="nav-dates">{nav}</div>
   </nav>
-  <main>
-    <div class="panel active" id="panel-final">{final_body}</div>
-    <div class="panel" id="panel-preview">{prev_body}</div>
-  </main>
+  <main>{body}</main>
 </div>
 <script>
 (function () {{
-  const buttons = document.querySelectorAll('.nav .tabs button');
-  function activate(tab) {{
-    buttons.forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-    document.getElementById('panel-final').classList.toggle('active', tab === 'final');
-    document.getElementById('panel-preview').classList.toggle('active', tab === 'preview');
-    document.getElementById('nav-final').classList.toggle('active', tab === 'final');
-    document.getElementById('nav-preview').classList.toggle('active', tab === 'preview');
-    try {{ localStorage.setItem('fwd-ret-tab', tab); }} catch (e) {{}}
-  }}
-  buttons.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
-  let tab = 'final';
-  try {{ tab = localStorage.getItem('fwd-ret-tab') || 'final'; }} catch (e) {{}}
-  if (tab === 'preview' || tab === 'final') activate(tab);
-
   function activateSrc(src) {{
     document.querySelectorAll('.src-tabs button').forEach(b => {{
       b.classList.toggle('active', b.dataset.src === src);
@@ -805,7 +775,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   }});
   let src = 'short';
   try {{ src = localStorage.getItem('fwd-ret-src') || 'short'; }} catch (e) {{}}
-  if (['short', 'long', 'board', 'base', 'relaunch', 'hot'].indexOf(src) >= 0) activateSrc(src);
+  if (['short', 'watch', 'long', 'board', 'base', 'relaunch', 'hot'].indexOf(src) >= 0) activateSrc(src);
 }})();
 </script>
 </body>
@@ -813,19 +783,22 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
 """
 
 
+
 def build_sections(
-    dates: list[str], preview: bool, asof: str | None
+    dates: list[str], asof: str | None
 ) -> list[dict]:
     sections = []
     for pick_date in dates:
-        short = as_picks(load_short_buys(pick_date, preview), "短线")
-        long = as_picks(load_long_buys(pick_date, preview), "长线")
-        board = as_picks(load_board_buys(pick_date, preview), "无量首板")
-        base = as_picks(load_base_buys(pick_date, preview), "底部启动")
-        relaunch = as_picks(load_relaunch_buys(pick_date, preview), "板后重启")
-        hot = load_hot_picks(pick_date, preview)
+        short = as_picks(load_short_buys(pick_date), "短线")
+        watch = load_watch_names(pick_date)
+        long = as_picks(load_long_buys(pick_date), "长线")
+        board = as_picks(load_board_buys(pick_date), "无量首板")
+        base = as_picks(load_base_buys(pick_date), "底部启动")
+        relaunch = as_picks(load_relaunch_buys(pick_date), "板后重启")
+        hot = load_hot_picks(pick_date)
         blocks = [
             make_block("short", "短线", short, pick_date, asof, f"可短打 {len(short)}"),
+            make_block("watch", "待观察", watch, pick_date, asof, f"待观察 {len(watch)}"),
             make_block("long", "长线", long, pick_date, asof, f"可买入 {len(long)}"),
             make_block(
                 "board",
@@ -877,11 +850,6 @@ def main() -> None:
         action="store_true",
         help="只生成指定那一天（需给 date）",
     )
-    parser.add_argument(
-        "--preview",
-        action="store_true",
-        help="配合 --stdout：终端只打印 Preview（HTML 始终含双 tab）",
-    )
     parser.add_argument("--asof", default="", help="涨跌截止日 YYYY-MM-DD")
     parser.add_argument(
         "--stdout",
@@ -918,22 +886,17 @@ def main() -> None:
         dates = all_dates
 
     asof = args.asof or None
-    log(f"生成选股日 {dates[0]} → {dates[-1]}  共 {len(dates)} 段（正式 + Preview）")
-    final_sections = build_sections(dates, preview=False, asof=asof)
-    preview_sections = build_sections(dates, preview=True, asof=asof)
+    log(f"生成选股日 {dates[0]} → {dates[-1]}  共 {len(dates)} 段")
+    sections = build_sections(dates, asof=asof)
 
     if args.stdout:
-        secs = preview_sections if args.preview else final_sections
-        label = "Preview" if args.preview else "正式"
-        log(f"=== 终端打印: {label} ===")
-        for sec in secs:
+        for sec in sections:
             print_section(sec)
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     html_text = render_html(
-        final_sections,
-        preview_sections,
+        sections,
         start=dates[0],
         end=dates[-1],
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
