@@ -27,6 +27,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 LEDGER = ROOT / "trades" / "live_trades.csv"
+LATEST_QUOTES = ROOT / "trades" / "latest_quotes.json"
 RALLY_EXIT = ROOT / "data" / "rally_exit.json"
 
 COLS = [
@@ -292,6 +293,97 @@ def _fnum(x, nd: int = 2):
         return None
 
 
+def load_open_quotes(codes: list[str]) -> tuple[str, dict[str, float], bool]:
+    """拉取持仓最新价并落盘；失败时退回上次行情缓存。"""
+    codes = [str(c).zfill(6) for c in codes]
+    try:
+        from update_daily import fetch_em_spot, to_num
+
+        spot = fetch_em_spot()
+        wanted = spot[spot["代码"].isin(codes)]
+        quotes = {
+            str(r["代码"]).zfill(6): float(price)
+            for _, r in wanted.iterrows()
+            if (price := to_num(r["最新价"])) is not None and price > 0
+        }
+        fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "fetched_at": fetched_at,
+            "source": "eastmoney_spot",
+            "quotes": quotes,
+        }
+        LATEST_QUOTES.parent.mkdir(parents=True, exist_ok=True)
+        LATEST_QUOTES.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return fetched_at, quotes, False
+    except Exception as exc:
+        if LATEST_QUOTES.exists():
+            try:
+                payload = json.loads(LATEST_QUOTES.read_text(encoding="utf-8"))
+                quotes = {
+                    str(k).zfill(6): float(v)
+                    for k, v in payload.get("quotes", {}).items()
+                    if str(k).zfill(6) in codes
+                }
+                log(f"实时行情拉取失败，使用缓存：{exc}")
+                return str(payload.get("fetched_at") or "未知"), quotes, True
+            except Exception:
+                pass
+        log(f"实时行情拉取失败：{exc}")
+        return "-", {}, True
+
+
+def log_open_positions(open_: pd.DataFrame) -> None:
+    if open_.empty:
+        log("(无持仓)")
+        return
+    fetched_at, quotes, cached = load_open_quotes(open_["code"].tolist())
+    log("=" * 72)
+    log("持仓中")
+    log("=" * 72)
+    log(f"行情时间: {fetched_at}" + ("（缓存）" if cached else ""))
+    open_cost = 0.0
+    open_value = 0.0
+    for _, r in open_.iterrows():
+        notes = str(r.get("notes") or "").strip()
+        code = str(r["code"]).zfill(6)
+        fill = _fnum(r["fill_price"])
+        latest = quotes.get(code)
+        if latest is not None and fill:
+            shares = int(r["shares"])
+            change = latest - fill
+            change_pct = change / fill * 100
+            floating = change * shares
+            open_cost += fill * shares
+            open_value += latest * shares
+            quote_s = (
+                f"  最新 {latest:.3f}  距成本 {change:+.3f} "
+                f"({change_pct:+.2f}%)  浮动 {floating:+.2f}"
+            )
+        else:
+            quote_s = "  最新价 -"
+        log(
+            f"{r['trade_id']}  {code} {r['name']}  "
+            f"{int(r['shares'])}股 @ {fill}  "
+            f"买入日 {r['entry_date']}  止损 {_fnum(r['stop_price'])}  "
+            f"止盈 {_fnum(r['target_price'])}{quote_s}"
+            + (f"  notes={notes}" if notes else "")
+        )
+    if open_cost:
+        floating_total = open_value - open_cost
+        log(
+            f"持仓合计  成本 {open_cost:.2f}  最新市值 {open_value:.2f}  "
+            f"浮动 {floating_total:+.2f} ({floating_total / open_cost * 100:+.2f}%)"
+        )
+
+
+def cmd_open() -> None:
+    df = load()
+    log_open_positions(df[df["status"].astype(str) == "open"].copy())
+    log(f"\n→ {LEDGER}")
+
+
 def cmd_summary() -> None:
     """平仓明细 + 胜率/累计盈利 + 当前持仓。"""
     df = load()
@@ -346,18 +438,7 @@ def cmd_summary() -> None:
 
     if len(open_):
         log("")
-        log("=" * 72)
-        log("持仓中")
-        log("=" * 72)
-        for _, r in open_.iterrows():
-            notes = str(r.get("notes") or "").strip()
-            log(
-                f"{r['trade_id']}  {r['code']} {r['name']}  "
-                f"{int(r['shares'])}股 @ {_fnum(r['fill_price'])}  "
-                f"买入日 {r['entry_date']}  止损 {_fnum(r['stop_price'])}  "
-                f"止盈 {_fnum(r['target_price'])}"
-                + (f"  notes={notes}" if notes else "")
-            )
+        log_open_positions(open_)
     log(f"\n→ {LEDGER}")
 
 
@@ -396,7 +477,7 @@ def main() -> None:
     if args.cmd == "list":
         cmd_list(args.status)
     elif args.cmd == "open":
-        cmd_list("open")
+        cmd_open()
     elif args.cmd == "summary":
         cmd_summary()
     elif args.cmd == "buy":
