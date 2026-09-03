@@ -13,7 +13,9 @@
 
 用法：
   .venv/bin/python run_daily_pool.py
+  .venv/bin/python run_daily_pool.py --mail          # 正式 + QQ 邮件摘要
   .venv/bin/python run_daily_pool.py --close
+  .venv/bin/python run_daily_pool.py --close --mail  # 收盘 + 观察簿邮件
   .venv/bin/python run_daily_pool.py --rebuild-html
   .venv/bin/python run_daily_pool.py --from-intraday-snapshot --from-date … --to-date …
 """
@@ -1264,6 +1266,7 @@ def run_one_day(
     scalp_strategy_ids: list[str] | None = None,
     preload: bool = True,
     update_watch_book: bool = True,
+    send_mail: bool = False,
 ) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
     """生成单日 signal_pool（+可选 hot_sectors）。
 
@@ -1304,6 +1307,12 @@ def run_one_day(
             else:
                 log("  跳过观察簿（--skip-watch-book）")
         live = pool_day_dir(asof)
+        if send_mail:
+            import pool_mail
+
+            watch_stocks = load_watch_book_stocks(asof, live, refresh=True)
+            log(f"[收盘] 发送观察簿邮件（{len(watch_stocks)} 只）…")
+            pool_mail.send_watch_mail(asof, watch_stocks)
         if (live / "index.html").exists():
             log(f"  交易 HTML：{live / 'index.html'}")
         return empty
@@ -1404,22 +1413,23 @@ def run_one_day(
     if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
         from plot_watch_pool import build_html
 
+        panels = {
+            "long": long_stocks,
+            "short": short_stocks,
+            "watch": watch_stocks,
+            "scalp": scalp_stocks,
+            "treasure": treasure_stocks,
+            "board": board_stocks,
+            "base": base_stocks,
+            "relaunch": relaunch_stocks,
+        }
         out_html = day_dir / "index.html"
         build_html(
             asof,
             [],
             out_html,
             days=180,
-            panels={
-                "long": long_stocks,
-                "short": short_stocks,
-                "watch": watch_stocks,
-                "scalp": scalp_stocks,
-                "treasure": treasure_stocks,
-                "board": board_stocks,
-                "base": base_stocks,
-                "relaunch": relaunch_stocks,
-            },
+            panels=panels,
         )
         log(
             f"  合并图: long={len(long_stocks)} short={len(short_stocks)} "
@@ -1440,6 +1450,11 @@ def run_one_day(
             relaunch_stat=relaunch_stat,
             watch_stat=watch_stat,
         )
+        if send_mail:
+            import pool_mail
+
+            log("[4b/4] 发送邮件摘要（无 K 线）…")
+            pool_mail.send_pool_mail(asof, panels)
 
     return (
         long_stat,
@@ -1459,6 +1474,11 @@ def main() -> None:
         "--close",
         action="store_true",
         help="收盘：重拉 K 线 + 观察增量入簿，不生成交易 HTML",
+    )
+    parser.add_argument(
+        "--mail",
+        action="store_true",
+        help="跑完后发 QQ 邮件（默认不发）：正式=信号池摘要，收盘=观察簿；需 .env",
     )
     parser.add_argument("--skip-update", action="store_true")
     parser.add_argument(
@@ -1625,6 +1645,10 @@ def main() -> None:
     update_watch_book = bool(args.watch_book) or (
         not args.skip_watch_book and not use_snap and not (from_d or to_d)
     )
+    # 区间回放默认不发邮件，避免连发多封；单日 + --mail 才发
+    send_mail = bool(args.mail) and not (from_d or to_d)
+    if args.mail and (from_d or to_d):
+        log("提示：区间回放不发邮件（仅单日 + --mail）")
 
     def run_day(d: str, *, preload: bool) -> tuple:
         import daily_cache
@@ -1659,6 +1683,7 @@ def main() -> None:
                 scalp_strategy_ids=scalp_ids,
                 preload=preload,
                 update_watch_book=update_watch_book,
+                send_mail=send_mail,
             )
         finally:
             if use_snap:

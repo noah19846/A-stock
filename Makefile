@@ -5,7 +5,9 @@ PYTHON := .venv/bin/python
 help:
 	@echo "常用命令："
 	@echo "  make daily                 正式：刷盘中价并生成交易 HTML"
+	@echo "  make daily ARGS='--mail'   正式 + 发 QQ 邮件摘要（需 .env）"
 	@echo "  make close                 收盘：更新 K 线 + 观察增量入簿（不生成 HTML）"
+	@echo "  make close ARGS='--mail'   收盘 + 发观察簿邮件"
 	@echo "  make hot                   只生成热门板块"
 	@echo "  make forward ARGS='...'    选股后续收益报告"
 	@echo "  make trades ARGS='...'     交易台账命令"
