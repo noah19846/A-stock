@@ -94,6 +94,45 @@ CREATE TABLE IF NOT EXISTS preview_bars (
 );
 CREATE INDEX IF NOT EXISTS idx_preview_bars_date
   ON preview_bars(trade_date);
+
+-- 短线观察簿：开仓一条，每日复检写 log
+CREATE TABLE IF NOT EXISTS watch_book (
+  code          TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  opened_date   TEXT NOT NULL,
+  name          TEXT,
+  opened_reason TEXT,
+  status        TEXT NOT NULL DEFAULT 'open',
+  closed_date   TEXT,
+  close_action  TEXT,
+  last_review   TEXT,
+  last_stage    TEXT,
+  last_note     TEXT,
+  days_open     INTEGER DEFAULT 1,
+  PRIMARY KEY (code, kind, opened_date)
+);
+CREATE INDEX IF NOT EXISTS idx_watch_book_open
+  ON watch_book(kind, status);
+
+CREATE TABLE IF NOT EXISTS watch_review (
+  review_date     TEXT NOT NULL,
+  code            TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  opened_date     TEXT NOT NULL,
+  action          TEXT NOT NULL,
+  stage           TEXT,
+  note            TEXT,
+  opened_reason   TEXT,
+  dist60_low_pct  REAL,
+  ret20_pct       REAL,
+  dist20_high_pct REAL,
+  px_ma20         REAL,
+  hard_score      REAL,
+  soft_score      REAL,
+  PRIMARY KEY (review_date, code, kind, opened_date)
+);
+CREATE INDEX IF NOT EXISTS idx_watch_review_date
+  ON watch_review(review_date);
 """
 
 

@@ -34,6 +34,9 @@ Thumbs.db
 data/daily_raw/
 data/db/
 
+# 短线观察簿导出（源在 sqlite data/db）
+data/watch_book/
+
 # Daily signal pool HTML / CSV outputs
 signal_pool/
 signal_pool_top3/

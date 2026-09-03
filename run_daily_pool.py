@@ -284,7 +284,108 @@ def _dist60_low_pct_from_bars(bars: list[dict], *, min_bars: int = 60) -> float 
     return round((close / lo - 1.0) * 100.0, 2)
 
 
+def _ret20_pct_from_bars(bars: list[dict], *, n: int = 20) -> float | None:
+    if len(bars) < n + 1:
+        return None
+    prev = float(bars[-(n + 1)]["close"])
+    close = float(bars[-1]["close"])
+    if prev <= 0:
+        return None
+    return round((close / prev - 1.0) * 100.0, 2)
+
+
 WARN_DIST60_LOW_PCT = 20.0
+IMPULSE_DIST60_LOW_PCT = 30.0
+IMPULSE_RET20_PCT = 15.0
+
+
+def _apply_watch_promotions(
+    stocks: list[dict],
+    promoted: list[dict],
+    *,
+    asof: str,
+    day_dir: Path,
+) -> list[dict]:
+    """观察簿独立升级：改成可短打，必要时补进当日短线列表。"""
+    if not promoted:
+        return stocks
+    by = {str(s.get("code") or "").zfill(6): s for s in stocks}
+    missing: list[dict] = []
+    for p in promoted:
+        code = str(p.get("code") or "").zfill(6)
+        note = str(p.get("when") or "观察簿升级")
+        if code in by:
+            by[code]["advice"] = "可短打"
+            by[code]["canBuy"] = True
+            by[code]["when"] = note
+            by[code]["watchPromote"] = True
+        else:
+            missing.append(p)
+    out = list(by.values())
+    if missing:
+        rows = []
+        for p in missing:
+            rows.append(
+                {
+                    "code": str(p["code"]).zfill(6),
+                    "name": p.get("name") or "",
+                    "stage": "可短打",
+                    "can_trade": True,
+                    "when": p.get("when") or "",
+                    "score": p.get("score"),
+                    "hard_score": p.get("hard_score"),
+                    "距60日低点%": p.get("距60日低点%"),
+                    "前20日涨幅%": p.get("前20日涨幅%"),
+                    "strategy_tags": "观察升级",
+                }
+            )
+        extra = stocks_from_df(
+            pd.DataFrame(rows),
+            asof=asof,
+            hot_industries=hot_map_for_day_dir(day_dir, asof),
+        )
+        for e in extra:
+            e["advice"] = "可短打"
+            e["canBuy"] = True
+            e["watchPromote"] = True
+        out.extend(extra)
+        log(f"  观察簿升级补进短线列表 {len(extra)} 只")
+    sig = day_dir / "short" / "signals.csv"
+    if sig.exists():
+        sdf = pd.read_csv(sig, dtype={"code": str})
+        if not sdf.empty and "code" in sdf.columns:
+            sdf["code"] = sdf["code"].astype(str).str.zfill(6)
+            have = set(sdf["code"])
+            for p in promoted:
+                code = str(p["code"]).zfill(6)
+                if code in have:
+                    m = sdf["code"] == code
+                    sdf.loc[m, "stage"] = "可短打"
+                    if "can_trade" in sdf.columns:
+                        sdf.loc[m, "can_trade"] = True
+                    sdf.loc[m, "when"] = p.get("when") or ""
+            add_rows = [p for p in promoted if str(p["code"]).zfill(6) not in have]
+            if add_rows:
+                extra_df = pd.DataFrame(
+                    [
+                        {
+                            "code": str(p["code"]).zfill(6),
+                            "name": p.get("name") or "",
+                            "stage": "可短打",
+                            "can_trade": True,
+                            "when": p.get("when") or "",
+                            "score": p.get("score"),
+                            "hard_score": p.get("hard_score"),
+                            "距60日低点%": p.get("距60日低点%"),
+                            "前20日涨幅%": p.get("前20日涨幅%"),
+                            "strategy_tags": "观察升级",
+                        }
+                        for p in add_rows
+                    ]
+                )
+                sdf = pd.concat([sdf, extra_df], ignore_index=True)
+            sdf.to_csv(sig, index=False, encoding="utf-8-sig")
+    return out
 
 
 def stocks_from_df(
@@ -361,11 +462,17 @@ def stocks_from_df(
             item["hardScore"] = float(row["hard_score"])
         if "距60日低点%" in row.index and pd.notna(row.get("距60日低点%")):
             item["dist60LowPct"] = round(float(row["距60日低点%"]), 2)
+        if "前20日涨幅%" in row.index and pd.notna(row.get("前20日涨幅%")):
+            item["ret20Pct"] = round(float(row["前20日涨幅%"]), 2)
         short_like = advice in ("可短打", "观察")
         if item.get("dist60LowPct") is None and short_like:
             from_bars = _dist60_low_pct_from_bars(bars)
             if from_bars is not None:
                 item["dist60LowPct"] = from_bars
+        if item.get("ret20Pct") is None and short_like:
+            r20 = _ret20_pct_from_bars(bars)
+            if r20 is not None:
+                item["ret20Pct"] = r20
         if short_like:
             warn = row.get("离底过远提醒")
             if warn in (True, 1, "True", "1", "true") or (
@@ -373,6 +480,14 @@ def stocks_from_df(
                 and item["dist60LowPct"] > WARN_DIST60_LOW_PCT
             ):
                 item["warnFarFromLow"] = True
+            impulse = row.get("急涨浅回提醒")
+            if impulse in (True, 1, "True", "1", "true") or (
+                item.get("dist60LowPct") is not None
+                and item.get("ret20Pct") is not None
+                and item["dist60LowPct"] > IMPULSE_DIST60_LOW_PCT
+                and item["ret20Pct"] > IMPULSE_RET20_PCT
+            ):
+                item["warnImpulse"] = True
         if "箱体底" in row and pd.notna(row["箱体底"]):
             item["boxBottom"] = float(row["箱体底"])
         if "箱体顶" in row and pd.notna(row["箱体顶"]):
@@ -1209,6 +1324,7 @@ def run_one_day(
     short_strategy_ids: list[str] | None = None,
     scalp_strategy_ids: list[str] | None = None,
     preload: bool = True,
+    update_watch_book: bool = True,
 ) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
     """生成单日 signal_pool（+可选 hot_sectors）。返回含 relaunch。"""
     day_dir = pool_day_dir(asof, mode)
@@ -1280,6 +1396,17 @@ def run_one_day(
             strategy_ids=short_strategy_ids,
             scalp_strategy_ids=scalp_strategy_ids,
         )
+        if update_watch_book:
+            import watch_book as wb
+
+            log("[3c/4] 短线观察簿复检…")
+            book = wb.review_day(asof, short_stocks=short_stocks, day_dir=day_dir)
+            promoted = book.get("promoted") or []
+            if promoted:
+                short_stocks = _apply_watch_promotions(
+                    short_stocks, promoted, asof=asof, day_dir=day_dir
+                )
+                log(f"  观察簿升级 {len(promoted)} 只 → 短线可短打")
     else:
         log("[3/4] 跳过短线")
         short_stocks = existing("short")
@@ -1361,6 +1488,16 @@ def main() -> None:
     parser.add_argument("--skip-base", action="store_true", help="不跑底部启动")
     parser.add_argument("--skip-relaunch", action="store_true", help="不跑板后重启")
     parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
+    parser.add_argument(
+        "--skip-watch-book",
+        action="store_true",
+        help="不更新短线观察簿（区间回放默认也不更新，可用 --watch-book 强制）",
+    )
+    parser.add_argument(
+        "--watch-book",
+        action="store_true",
+        help="强制更新观察簿（含 --from-date/--from-preview-snapshot 回放）",
+    )
     parser.add_argument(
         "--from-preview-snapshot",
         action="store_true",
@@ -1487,6 +1624,13 @@ def main() -> None:
     elif do_short:
         scalp_ids = []
 
+    from_d = args.from_date.strip()
+    to_d = args.to_date.strip()
+    # 区间/截面回放默认不写观察簿，避免历史日把「在册」弄脏；单日 preview/final 默认写
+    update_watch_book = bool(args.watch_book) or (
+        not args.skip_watch_book and not use_snap and not (from_d or to_d)
+    )
+
     def run_day(d: str, *, preload: bool) -> tuple:
         import daily_cache
 
@@ -1519,13 +1663,12 @@ def main() -> None:
                 short_strategy_ids=short_ids,
                 scalp_strategy_ids=scalp_ids,
                 preload=preload,
+                update_watch_book=update_watch_book,
             )
         finally:
             if use_snap:
                 daily_cache.set_preview_overlay(None)
 
-    from_d = args.from_date.strip()
-    to_d = args.to_date.strip()
     if from_d or to_d:
         if not (from_d and to_d):
             raise SystemExit("--from-date 与 --to-date 需同时指定")

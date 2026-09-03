@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analyze_short_burst_features import load_maps, mv_bounds, score_row
+from analyze_short_burst_features import impulse_blocks_trade, load_maps, mv_bounds, score_row
 
 ROOT = Path(__file__).resolve().parent
 DAILY = ROOT / "data" / "daily_raw"
@@ -70,6 +70,8 @@ def is_signal(feat: dict, soft: float, hard: float, bands: dict) -> bool:
     if feat["前5日涨幅%"] > 8 or feat["距20日高点%"] > -2:
         return False
     if feat.get("前1日涨幅%", 0) > 3:
+        return False
+    if impulse_blocks_trade(feat, bands):
         return False
     # 离 60 日低点涨太多：底部段已走完，默认不进信号
     max_from_low = bands.get("max_dist60_low_pct")

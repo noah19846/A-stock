@@ -455,6 +455,12 @@ main {
   border: 1px solid #ffcc80;
   font-weight: 650;
 }
+.badge-warn-impulse {
+  background: #fce4ec;
+  color: #c2185b;
+  border: 1px solid #f8bbd0;
+  font-weight: 650;
+}
 .badge-strategy {
   border: 1px solid transparent;
 }
@@ -538,6 +544,18 @@ main {
   border: 1px solid #ffcc80;
   font-weight: 650;
 }
+.nav-warn-impulse {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 4px;
+  background: #fce4ec;
+  color: #c2185b;
+  border: 1px solid #f8bbd0;
+  font-weight: 650;
+}
 
 .cond-tip {
   color: var(--muted);
@@ -596,6 +614,8 @@ main {
 .metric.metric-dist60 .metric-v { color: #616161; }
 .metric.metric-warn-far-low { background: #fff3e0; border-color: #ffcc80; }
 .metric.metric-warn-far-low .metric-v { color: #e65100; font-weight: 650; }
+.metric.metric-warn-impulse { background: #fce4ec; border-color: #f8bbd0; }
+.metric.metric-warn-impulse .metric-v { color: #c2185b; font-weight: 650; }
 .metric.chg-up { background: #ffe8e6; border-color: #ffc1bc; }
 .metric.chg-up .metric-v { color: #c62828; }
 .metric.chg-down { background: #e6f7ee; border-color: #a8e0c0; }

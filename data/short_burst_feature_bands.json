@@ -133,5 +133,33 @@
   "signal_hard": 0.85,
   "signal_soft": 0.72,
   "warn_dist60_low_pct": 20.0,
+  "impulse_demote": {
+    "dist60_low_pct": 30.0,
+    "ret20_pct": 15.0,
+    "digest_ret20_pct": 10.0
+  },
+  "impulse_reentry": {
+    "dist20_high_pct": -8.0,
+    "px_ma20": 1.03
+  },
+  "watch_promote": {
+    "impulse": {
+      "dist20_high_pct": -8.0,
+      "dist20_high_floor": -18.0,
+      "px_ma20_hi": 1.03,
+      "px_ma20_lo": 0.94,
+      "px_ma5_lo": 0.985,
+      "need_stabilize": true
+    },
+    "near_setup": {
+      "px_ma5_lo": 0.975,
+      "px_ma5_hi": 1.008,
+      "prev1_hi": 0.0,
+      "min_hard": 0.80
+    }
+  },
+  "watch_book": {
+    "max_days": 12
+  },
   "mv_yi": [40, 800]
 }

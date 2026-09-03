@@ -24,6 +24,10 @@ import pandas as pd
 from analyze_short_burst_features import (
     FEATURE_COLS,
     features_at,
+    impulse_blocks_trade,
+    impulse_watch_when,
+    is_impulse_digesting,
+    is_impulse_leftover,
     load_maps,
     mv_bounds,
     score_row,
@@ -140,11 +144,19 @@ def verdict_from_feat(
             f"硬条件+画像都过。计划：轻仓短打；目标约+{tp:.0f}%减仓；"
             f"盘中相对成本回撤破约-{sl:.0f}%离场；满{hold}日未达目标评估离场。"
         )
+        if impulse_blocks_trade(feat, bands):
+            stage = "观察"
+            can = False
+            when = impulse_watch_when(feat, bands)
+            reasons.append("急涨浅回链路：未满足厚实再入，暂不首打")
     elif hard >= watch_hard and soft >= watch_soft:
         # 观察必须硬条件与画像同时接近，禁止「只过一边」灌水
         stage = "观察"
         can = False
-        when = "接近短线爆发画像，等阴线企稳后的量能确认或收盘更贴MA5"
+        when = (
+            "接近短线爆发画像，入观察簿：阴线后收盘贴回MA5且硬条件不太差则升级"
+            "（不要求再过 default 可短打）"
+        )
     else:
         stage = "不关注"
         can = False
@@ -161,6 +173,9 @@ def verdict_from_feat(
         d60l is not None
         and np.isfinite(float(d60l))
         and float(d60l) > warn_thr
+    )
+    metrics["急涨浅回提醒"] = bool(
+        is_impulse_leftover(feat, bands) or is_impulse_digesting(feat, bands)
     )
 
     return Verdict(

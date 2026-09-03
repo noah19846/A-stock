@@ -295,6 +295,194 @@ def build_bands(cmp: pd.DataFrame, top_k: int = 10) -> dict:
     return {"rules": rules, "hard": hard, "min_score": 0.72, "min_hard": 0.75}
 
 
+def _finite_feat(feat: dict, key: str) -> float | None:
+    v = feat.get(key)
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
+def is_impulse_leftover(feat: dict, bands: dict) -> bool:
+    """急涨后浅回：距60日低已高，且近20日涨幅仍大（纽威/盈峰这类）。首打一律观察。"""
+    cfg = bands.get("impulse_demote") or {}
+    if not cfg:
+        return False
+    d_min = cfg.get("dist60_low_pct")
+    r_min = cfg.get("ret20_pct")
+    if d_min is None or r_min is None:
+        return False
+    d60 = _finite_feat(feat, "距60日低点%")
+    r20 = _finite_feat(feat, "前20日涨幅%")
+    if d60 is None or r20 is None:
+        return False
+    return d60 > float(d_min) and r20 > float(r_min)
+
+
+def is_impulse_digesting(feat: dict, bands: dict) -> bool:
+    """急涨后正在消化：距60低仍高、前20日已降到 demote 以下但仍偏热。需更深回撤才允许首打。"""
+    if is_impulse_leftover(feat, bands):
+        return False
+    cfg = bands.get("impulse_demote") or {}
+    if not cfg:
+        return False
+    d_min = cfg.get("dist60_low_pct")
+    digest_r = cfg.get("digest_ret20_pct", 10.0)
+    if d_min is None:
+        return False
+    d60 = _finite_feat(feat, "距60日低点%")
+    r20 = _finite_feat(feat, "前20日涨幅%")
+    if d60 is None or r20 is None:
+        return False
+    return d60 > float(d_min) and r20 > float(digest_r)
+
+
+def passes_impulse_reentry(feat: dict, bands: dict) -> bool:
+    """厚实再入：相对20日高更深回撤，且收盘回到 MA20 附近。"""
+    re = bands.get("impulse_reentry") or {}
+    if not re:
+        return True
+    d20_need = re.get("dist20_high_pct")
+    px_need = re.get("px_ma20")
+    ok = True
+    if d20_need is not None:
+        d20 = _finite_feat(feat, "距20日高点%")
+        if d20 is None or d20 > float(d20_need):
+            ok = False
+    if px_need is not None:
+        px = _finite_feat(feat, "收盘/MA20")
+        if px is None or px > float(px_need):
+            ok = False
+    return ok
+
+
+def impulse_blocks_trade(feat: dict, bands: dict) -> bool:
+    """急涨浅回链路：leftover 一律挡；digesting 未过厚实再入也挡。"""
+    if is_impulse_leftover(feat, bands):
+        return True
+    if is_impulse_digesting(feat, bands) and not passes_impulse_reentry(feat, bands):
+        return True
+    return False
+
+
+def impulse_watch_when(feat: dict, bands: dict) -> str:
+    """观察理由 + 观察簿独立升级清单（不要求再过 default 可短打）。"""
+    cfg = bands.get("impulse_demote") or {}
+    promo = ((bands.get("watch_promote") or {}).get("impulse") or {})
+    d_min = float(cfg.get("dist60_low_pct", 30))
+    r_hot = float(cfg.get("ret20_pct", 15))
+    d20_need = float(promo.get("dist20_high_pct", -8))
+    d20_floor = float(promo.get("dist20_high_floor", -18))
+    px_need = float(promo.get("px_ma20_hi", 1.03))
+    px_lo = float(promo.get("px_ma20_lo", 0.94))
+
+    d60 = _finite_feat(feat, "距60日低点%") or 0.0
+    r20 = _finite_feat(feat, "前20日涨幅%") or 0.0
+    d20 = _finite_feat(feat, "距20日高点%")
+    px = _finite_feat(feat, "收盘/MA20")
+    d20_s = f"{d20:.1f}%" if d20 is not None else "—"
+    px_s = f"{px:.3f}" if px is not None else "—"
+
+    phase = (
+        f"观察理由：急涨浅回未消化（距60低+{d60:.0f}%>{d_min:.0f}%，前20日+{r20:.0f}%，"
+        f"现距20高{d20_s}），首打盈亏比差。"
+    )
+    return (
+        f"{phase} 观察簿升级（独立于default）："
+        f"①距20日高点∈[{d20_floor:.0f}%,{d20_need:.0f}%]（现{d20_s}）；"
+        f"②收盘/MA20∈[{px_lo:.2f},{px_need:.2f}]（现{px_s}）；"
+        f"③止跌（收阳或收盘/MA5≥0.985）；④未贴回20高、流动性仍可。"
+        f"不要求再过短线硬条件/画像。"
+    )
+
+
+def watch_promote_status(
+    feat: dict,
+    bands: dict,
+    opened_reason: str | None,
+    *,
+    hard_score: float | None = None,
+) -> tuple[bool, str, list[str]]:
+    """观察簿专用升级，不要求 default 可短打。
+
+    返回 (ready, note, gaps)。
+    """
+    reason = opened_reason or ""
+    promo_root = bands.get("watch_promote") or {}
+    gaps: list[str] = []
+
+    def _hot() -> bool:
+        return (
+            (feat.get("前5日涨幅%") or 0) > 8
+            or (feat.get("距20日高点%") or -99) > -2
+            or (feat.get("前1日涨幅%") or 0) > 3
+        )
+
+    mv_lo, mv_hi = mv_bounds(bands)
+    mv = _finite_feat(feat, "流通市值亿")
+    turn = _finite_feat(feat, "换手率%")
+    if mv is None or mv < mv_lo or mv > mv_hi:
+        gaps.append("市值不在进出区间")
+    if turn is None or turn > 12 or turn < 0.8:
+        gaps.append("换手不适合短线")
+    if _hot():
+        gaps.append("已偏强/贴20高")
+
+    if reason.startswith("impulse"):
+        cfg = promo_root.get("impulse") or {}
+        d20_need = float(cfg.get("dist20_high_pct", -8))
+        d20_floor = float(cfg.get("dist20_high_floor", -18))
+        px_hi = float(cfg.get("px_ma20_hi", 1.03))
+        px_lo = float(cfg.get("px_ma20_lo", 0.94))
+        ma5_lo = float(cfg.get("px_ma5_lo", 0.985))
+        d20 = _finite_feat(feat, "距20日高点%")
+        px = _finite_feat(feat, "收盘/MA20")
+        ma5 = _finite_feat(feat, "收盘/MA5")
+        ret1 = _finite_feat(feat, "今日涨跌%")
+        if d20 is None or d20 > d20_need or d20 < d20_floor:
+            gaps.append(f"距20高需∈[{d20_floor:.0f},{d20_need:.0f}]%（现{d20 if d20 is not None else '—'}）")
+        if px is None or px > px_hi or px < px_lo:
+            gaps.append(f"收盘/MA20需∈[{px_lo:.2f},{px_hi:.2f}]（现{px if px is not None else '—'}）")
+        if cfg.get("need_stabilize", True):
+            ok_stab = (ret1 is not None and ret1 >= 0) or (ma5 is not None and ma5 >= ma5_lo)
+            if not ok_stab:
+                gaps.append(f"未止跌（需收阳或收盘/MA5≥{ma5_lo}）")
+        if gaps:
+            return False, "观察簿未升级：" + "；".join(gaps), gaps
+        return (
+            True,
+            (
+                f"观察簿厚实再入（非default）：距20高{d20:.1f}%且收盘/MA20={px:.3f}，"
+                f"已止跌。计划同短线：轻仓、+15%/-3%、最多8日。"
+            ),
+            [],
+        )
+
+    if reason == "near_setup":
+        cfg = promo_root.get("near_setup") or {}
+        ma5_lo = float(cfg.get("px_ma5_lo", 0.975))
+        ma5_hi = float(cfg.get("px_ma5_hi", 1.008))
+        prev1_hi = float(cfg.get("prev1_hi", 0.0))
+        min_hard = float(cfg.get("min_hard", 0.80))
+        ma5 = _finite_feat(feat, "收盘/MA5")
+        prev1 = _finite_feat(feat, "前1日涨幅%")
+        # hard_score 不在 feat 里，调用方会再拦一道；这里只看结构
+        if ma5 is None or ma5 < ma5_lo or ma5 > ma5_hi:
+            gaps.append(f"收盘/MA5需∈[{ma5_lo:.3f},{ma5_hi:.3f}]（现{ma5 if ma5 is not None else '—'}）")
+        if prev1 is None or prev1 > prev1_hi:
+            gaps.append(f"需先有阴线（前1日涨幅≤{prev1_hi:.1f}%，现{prev1 if prev1 is not None else '—'}）")
+        if hard_score is not None and hard_score < min_hard:
+            gaps.append(f"硬条件仍偏弱（{hard_score:.2f}<{min_hard:.2f}）")
+        if gaps:
+            return False, "观察簿未升级：" + "；".join(gaps), gaps
+        return True, "观察簿确认再入（非default）：阴线后收盘贴回MA5。", []
+
+    return False, "无独立升级规则（非急涨浅回/近画像观察）", gaps
+
+
 def score_row(feat: dict, bands: dict) -> tuple[float, float, list[str]]:
     """返回 (soft_score, hard_score, reasons)。"""
     reasons: list[str] = []

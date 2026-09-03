@@ -427,6 +427,14 @@ function sma(arr, n) {
       return out;
     }
 
+    function impulseTitle(s) {
+      const d = s.dist60LowPct != null ? Number(s.dist60LowPct).toFixed(0) : '';
+      const r = s.ret20Pct != null ? Number(s.ret20Pct).toFixed(0) : '';
+      let t = '急涨浅回：距60日低已高且近20日涨幅仍大，不做首打（类似盈峰/纽威）';
+      if (d && r) t = '急涨浅回：距60低+' + d + '%、前20日+' + r + '%，不做首打';
+      return t;
+    }
+
     function farFromLowTitle(s) {
       const pct = s.dist60LowPct != null ? Number(s.dist60LowPct).toFixed(1) : '';
       const head = '距60日低点涨幅偏高（默认>20%）';
@@ -441,6 +449,9 @@ function sma(arr, n) {
       }
       if (s.warnFarFromLow) {
         html += '<span class="badge badge-warn-far-low" title="' + escapeHtml(farFromLowTitle(s)) + '">离底远</span>';
+      }
+      if (s.warnImpulse) {
+        html += '<span class="badge badge-warn-impulse" title="' + escapeHtml(impulseTitle(s)) + '">急涨浅回</span>';
       }
       if (s.industry)
         html += '<span class="badge badge-industry' + (s.hotSector ? ' badge-industry-hot' : '') + '">' +
@@ -493,6 +504,8 @@ function sma(arr, n) {
         parts.push(chip('硬条件', Number(s.hardScore).toFixed(3), 'metric-score'));
       if (s.dist60LowPct != null)
         parts.push(chip('距60低', '+' + Number(s.dist60LowPct).toFixed(1) + '%', s.warnFarFromLow ? 'metric-warn-far-low' : 'metric-dist60'));
+      if (s.ret20Pct != null)
+        parts.push(chip('前20日', (Number(s.ret20Pct) >= 0 ? '+' : '') + Number(s.ret20Pct).toFixed(1) + '%', s.warnImpulse ? 'metric-warn-impulse' : 'metric-dist60'));
       if (s.boxBottom != null)
         parts.push(chip('箱体底', fmtPrice(s.boxBottom), 'metric-box'));
       if (s.takeProfit != null)
@@ -716,6 +729,14 @@ function sma(arr, n) {
           warn.textContent = '离底远';
           warn.title = farFromLowTitle(s);
           rowTags.appendChild(warn);
+          hasTag = true;
+        }
+        if (s.warnImpulse) {
+          const w2 = document.createElement('span');
+          w2.className = 'nav-warn-impulse';
+          w2.textContent = '急涨浅回';
+          w2.title = impulseTitle(s);
+          rowTags.appendChild(w2);
           hasTag = true;
         }
         const strats = visibleStrategies(s);
