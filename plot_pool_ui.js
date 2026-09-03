@@ -583,6 +583,7 @@ function sma(arr, n) {
         const nl = document.getElementById('n-long');
         const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
+        const nw = document.getElementById('n-watch');
         const np = document.getElementById('n-scalp');
         const nb = document.getElementById('n-board');
         const nbase = document.getElementById('n-base');
@@ -590,6 +591,7 @@ function sma(arr, n) {
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+        if (nw) nw.textContent = '(' + String((PANELS.watch || []).length) + ')';
         if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
         if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';
@@ -603,6 +605,7 @@ function sma(arr, n) {
       nav.innerHTML =
         '<div id="nav-long" class="tab-pane"></div>' +
         '<div id="nav-short" class="tab-pane" hidden></div>' +
+        '<div id="nav-watch" class="tab-pane" hidden></div>' +
         '<div id="nav-scalp" class="tab-pane" hidden></div>' +
         '<div id="nav-treasure" class="tab-pane" hidden></div>' +
         '<div id="nav-board" class="tab-pane" hidden></div>' +
@@ -611,6 +614,7 @@ function sma(arr, n) {
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
         '<div id="main-short" class="tab-pane" hidden></div>' +
+        '<div id="main-watch" class="tab-pane" hidden></div>' +
         '<div id="main-scalp" class="tab-pane" hidden></div>' +
         '<div id="main-treasure" class="tab-pane" hidden></div>' +
         '<div id="main-board" class="tab-pane" hidden></div>' +
@@ -632,7 +636,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short', 'scalp', 'treasure', 'board', 'base', 'relaunch'].forEach(t => {
+      ['long', 'short', 'watch', 'scalp', 'treasure', 'board', 'base', 'relaunch'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);
@@ -781,6 +785,7 @@ function sma(arr, n) {
         const nl = document.getElementById('n-long');
         const nt = document.getElementById('n-treasure');
         const ns = document.getElementById('n-short');
+        const nw = document.getElementById('n-watch');
         const np = document.getElementById('n-scalp');
         const nb = document.getElementById('n-board');
         const nbase = document.getElementById('n-base');
@@ -788,6 +793,7 @@ function sma(arr, n) {
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
+        if (nw) nw.textContent = '(' + String((PANELS.watch || []).length) + ')';
         if (np) np.textContent = '(' + String((PANELS.scalp || []).length) + ')';
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
         if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';

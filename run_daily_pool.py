@@ -299,93 +299,34 @@ IMPULSE_DIST60_LOW_PCT = 30.0
 IMPULSE_RET20_PCT = 15.0
 
 
-def _apply_watch_promotions(
-    stocks: list[dict],
-    promoted: list[dict],
-    *,
-    asof: str,
-    day_dir: Path,
+def load_watch_book_stocks(
+    asof: str, day_dir: Path, *, refresh: bool = True
 ) -> list[dict]:
-    """观察簿独立升级：改成可短打，必要时补进当日短线列表。"""
-    if not promoted:
-        return stocks
-    by = {str(s.get("code") or "").zfill(6): s for s in stocks}
-    missing: list[dict] = []
-    for p in promoted:
-        code = str(p.get("code") or "").zfill(6)
-        note = str(p.get("when") or "观察簿升级")
-        if code in by:
-            by[code]["advice"] = "可短打"
-            by[code]["canBuy"] = True
-            by[code]["when"] = note
-            by[code]["watchPromote"] = True
-        else:
-            missing.append(p)
-    out = list(by.values())
-    if missing:
-        rows = []
-        for p in missing:
-            rows.append(
-                {
-                    "code": str(p["code"]).zfill(6),
-                    "name": p.get("name") or "",
-                    "stage": "可短打",
-                    "can_trade": True,
-                    "when": p.get("when") or "",
-                    "score": p.get("score"),
-                    "hard_score": p.get("hard_score"),
-                    "距60日低点%": p.get("距60日低点%"),
-                    "前20日涨幅%": p.get("前20日涨幅%"),
-                    "strategy_tags": "观察升级",
-                }
-            )
-        extra = stocks_from_df(
-            pd.DataFrame(rows),
-            asof=asof,
-            hot_industries=hot_map_for_day_dir(day_dir, asof),
-        )
-        for e in extra:
-            e["advice"] = "可短打"
-            e["canBuy"] = True
-            e["watchPromote"] = True
-        out.extend(extra)
-        log(f"  观察簿升级补进短线列表 {len(extra)} 只")
-    sig = day_dir / "short" / "signals.csv"
-    if sig.exists():
-        sdf = pd.read_csv(sig, dtype={"code": str})
-        if not sdf.empty and "code" in sdf.columns:
-            sdf["code"] = sdf["code"].astype(str).str.zfill(6)
-            have = set(sdf["code"])
-            for p in promoted:
-                code = str(p["code"]).zfill(6)
-                if code in have:
-                    m = sdf["code"] == code
-                    sdf.loc[m, "stage"] = "可短打"
-                    if "can_trade" in sdf.columns:
-                        sdf.loc[m, "can_trade"] = True
-                    sdf.loc[m, "when"] = p.get("when") or ""
-            add_rows = [p for p in promoted if str(p["code"]).zfill(6) not in have]
-            if add_rows:
-                extra_df = pd.DataFrame(
-                    [
-                        {
-                            "code": str(p["code"]).zfill(6),
-                            "name": p.get("name") or "",
-                            "stage": "可短打",
-                            "can_trade": True,
-                            "when": p.get("when") or "",
-                            "score": p.get("score"),
-                            "hard_score": p.get("hard_score"),
-                            "距60日低点%": p.get("距60日低点%"),
-                            "前20日涨幅%": p.get("前20日涨幅%"),
-                            "strategy_tags": "观察升级",
-                        }
-                        for p in add_rows
-                    ]
-                )
-                sdf = pd.concat([sdf, extra_df], ignore_index=True)
-            sdf.to_csv(sig, index=False, encoding="utf-8-sig")
-    return out
+    """观察簿在册票 → HTML 列表（独立 tab，不并入短线）。"""
+    import watch_book as wb
+
+    if refresh:
+        df = wb.open_as_signal_df()
+        wb.write_watch_panel_csv(day_dir, df)
+    else:
+        df = _read_pool_csv(day_dir / "watch" / "signals.csv")
+        if df.empty:
+            # 旧目录可能只有 watch_book.csv
+            alt = day_dir / "watch_book.csv"
+            if alt.exists():
+                raw = _read_pool_csv(alt)
+                if not raw.empty and "stage" not in raw.columns:
+                    # open.csv 形态 → 转 signals
+                    df = wb.open_as_signal_df()
+                    if not df.empty:
+                        wb.write_watch_panel_csv(day_dir, df)
+                else:
+                    df = raw
+    if df is None or df.empty:
+        return []
+    return stocks_from_df(
+        df, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
 
 
 def stocks_from_df(
@@ -554,6 +495,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
 
     long_stocks = panel("long")
     short_stocks = panel("short")
+    watch_stocks = load_watch_book_stocks(asof, day_dir, refresh=False)
     scalp_stocks = panel("scalp")
     treasure_stocks = panel("treasure")
     board_stocks = panel("board")
@@ -568,6 +510,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
         panels={
             "long": long_stocks,
             "short": short_stocks,
+            "watch": watch_stocks,
             "scalp": scalp_stocks,
             "treasure": treasure_stocks,
             "board": board_stocks,
@@ -577,7 +520,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
     )
     log(
         f"  重刷 {asof} {day_dir.name if day_dir.name == 'preview' else 'final'}: "
-        f"long={len(long_stocks)} short={len(short_stocks)} "
+        f"long={len(long_stocks)} short={len(short_stocks)} watch={len(watch_stocks)} "
         f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
         f"board={len(board_stocks)} base={len(base_stocks)} "
         f"relaunch={len(relaunch_stocks)} → {out_html}"
@@ -1241,6 +1184,7 @@ def write_meta(
     board_stat: dict | None = None,
     base_stat: dict | None = None,
     relaunch_stat: dict | None = None,
+    watch_stat: dict | None = None,
 ) -> None:
     meta = {
         "date": asof,
@@ -1251,6 +1195,7 @@ def write_meta(
         "index_html": str(day_dir / "index.html"),
         "long": long_stat,
         "short": short_stat,
+        "watch": watch_stat or {},
         "scalp": scalp_stat or {},
         "treasure": treasure_stat or {},
         "board": board_stat or {},
@@ -1278,7 +1223,7 @@ def write_meta(
             prev = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             prev = {}
-    for key in ("long", "short", "scalp", "treasure", "board", "base", "relaunch"):
+    for key in ("long", "short", "watch", "scalp", "treasure", "board", "base", "relaunch"):
         if not meta.get(key) and prev.get(key):
             meta[key] = prev[key]
     path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1388,6 +1333,8 @@ def run_one_day(
     else:
         log("[2f/4] 跳过板后重启")
         relaunch_stocks = existing("relaunch")
+    watch_stocks: list[dict] = []
+    watch_stat: dict = {}
     if do_short:
         short_stat, short_stocks, scalp_stat, scalp_stocks = run_short(
             day_dir,
@@ -1401,16 +1348,22 @@ def run_one_day(
 
             log("[3c/4] 短线观察簿复检…")
             book = wb.review_day(asof, short_stocks=short_stocks, day_dir=day_dir)
-            promoted = book.get("promoted") or []
-            if promoted:
-                short_stocks = _apply_watch_promotions(
-                    short_stocks, promoted, asof=asof, day_dir=day_dir
-                )
-                log(f"  观察簿升级 {len(promoted)} 只 → 短线可短打")
+            n_up = len(book.get("promoted") or [])
+            if n_up:
+                log(f"  观察簿升级 {n_up} 只（仅记入观察簿状态，不并入短线 tab）")
+        watch_stocks = load_watch_book_stocks(asof, day_dir, refresh=True)
+        watch_stat = {
+            "rows": len(watch_stocks),
+            "watch": len(watch_stocks),
+            "charts": len(watch_stocks),
+        }
+        log(f"  观察簿 tab: {len(watch_stocks)} 只 → {day_dir / 'watch' / 'signals.csv'}")
     else:
         log("[3/4] 跳过短线")
         short_stocks = existing("short")
         scalp_stocks = existing("scalp")
+        watch_stocks = load_watch_book_stocks(asof, day_dir, refresh=False)
+        watch_stat = {"rows": len(watch_stocks), "watch": len(watch_stocks)}
 
     if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
         from plot_watch_pool import build_html
@@ -1424,6 +1377,7 @@ def run_one_day(
             panels={
                 "long": long_stocks,
                 "short": short_stocks,
+                "watch": watch_stocks,
                 "scalp": scalp_stocks,
                 "treasure": treasure_stocks,
                 "board": board_stocks,
@@ -1433,9 +1387,9 @@ def run_one_day(
         )
         log(
             f"  合并图: long={len(long_stocks)} short={len(short_stocks)} "
-            f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
-            f"board={len(board_stocks)} base={len(base_stocks)} "
-            f"relaunch={len(relaunch_stocks)} → {out_html}"
+            f"watch={len(watch_stocks)} scalp={len(scalp_stocks)} "
+            f"treasure={len(treasure_stocks)} board={len(board_stocks)} "
+            f"base={len(base_stocks)} relaunch={len(relaunch_stocks)} → {out_html}"
         )
         write_meta(
             day_dir,
@@ -1448,6 +1402,7 @@ def run_one_day(
             board_stat=board_stat,
             base_stat=base_stat,
             relaunch_stat=relaunch_stat,
+            watch_stat=watch_stat,
         )
 
     return (

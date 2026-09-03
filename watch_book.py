@@ -533,6 +533,74 @@ def export_snapshots(
     return out
 
 
+def open_as_signal_df(
+    *,
+    db_path: Path | None = None,
+    kind: str = KIND,
+) -> pd.DataFrame:
+    """在册观察 → 与短线 signals 同结构的 DataFrame，供 HTML tab 使用。"""
+    conn = _conn(db_path)
+    try:
+        rows = open_rows(conn, kind=kind)
+    finally:
+        conn.close()
+    if not rows:
+        return pd.DataFrame()
+    out = []
+    for r in rows:
+        reason = str(r["opened_reason"] or "")
+        impulse = reason.startswith("impulse")
+        note = str(r["last_note"] or "").strip()
+        if not note:
+            note = "观察簿在册，等待独立升级条件"
+        tags = "急涨浅回" if impulse else "观察簿"
+        out.append(
+            {
+                "code": str(r["code"]).zfill(6),
+                "name": r["name"] or "",
+                "stage": "观察",
+                "can_trade": False,
+                "when": note,
+                "opened_date": r["opened_date"],
+                "opened_reason": reason,
+                "days_open": r["days_open"],
+                "last_stage": r["last_stage"],
+                "急涨浅回提醒": impulse,
+                "strategy_tags": tags,
+                "strategy_ids": "watch",
+            }
+        )
+    return pd.DataFrame(out)
+
+
+def write_watch_panel_csv(day_dir: Path, df: pd.DataFrame | None = None) -> Path:
+    """写入 day_dir/watch/signals.csv，便于 --rebuild-html。"""
+    out_dir = day_dir / "watch"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "signals.csv"
+    if df is None:
+        df = open_as_signal_df()
+    if df is None or df.empty:
+        pd.DataFrame(
+            columns=[
+                "code",
+                "name",
+                "stage",
+                "can_trade",
+                "when",
+                "opened_date",
+                "opened_reason",
+                "days_open",
+                "急涨浅回提醒",
+                "strategy_tags",
+                "strategy_ids",
+            ]
+        ).to_csv(path, index=False, encoding="utf-8-sig")
+    else:
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
+
 def print_status(db_path: Path | None = None, kind: str = KIND) -> None:
     conn = _conn(db_path)
     try:

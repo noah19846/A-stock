@@ -166,7 +166,7 @@ __CSS__
   </div>
   <script>
     __DATA_JS__
-    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '🟥 无量首板', base: '📦 底部启动', relaunch: '🔄 板后重启' };
+    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', watch: '👀 观察簿', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '🟥 无量首板', base: '📦 底部启动', relaunch: '🔄 板后重启' };
     let currentTab = 'long';
     let charts = [];
 __CHART_JS__
@@ -743,6 +743,7 @@ def build_html(
     <div class="tabs" id="tabs">
       <button type="button" class="tab-btn active" data-tab="long">📈 中长线 <span id="n-long">0</span></button>
       <button type="button" class="tab-btn" data-tab="short">⚡ 短线 <span id="n-short">0</span></button>
+      <button type="button" class="tab-btn" data-tab="watch">👀 观察簿 <span id="n-watch">0</span></button>
       <button type="button" class="tab-btn" data-tab="scalp">🎯 Scalp <span id="n-scalp">0</span></button>
       <button type="button" class="tab-btn" data-tab="treasure">💎 宝藏观察 <span id="n-treasure">0</span></button>
       <button type="button" class="tab-btn" data-tab="board">🟥 无量首板 <span id="n-board">0</span></button>
