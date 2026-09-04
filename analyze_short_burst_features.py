@@ -72,18 +72,41 @@ FEATURE_COLS = [
 
 @lru_cache(maxsize=1)
 def load_maps() -> tuple[dict[str, str], dict[str, str]]:
+    """名称优先 stock_list；缺失时用 stock_industry 的股票名称兜底。"""
     name_map: dict[str, str] = {}
-    if LIST.exists():
-        nm = pd.read_csv(LIST, dtype=str)
-        c = "股票代码" if "股票代码" in nm.columns else nm.columns[0]
-        n = "股票名称" if "股票名称" in nm.columns else nm.columns[1]
-        nm[c] = nm[c].astype(str).str.zfill(6)
-        name_map = dict(zip(nm[c], nm[n].astype(str)))
     ind_map: dict[str, str] = {}
+
+    def _code_col(df: pd.DataFrame) -> str:
+        return "股票代码" if "股票代码" in df.columns else df.columns[0]
+
+    def _name_col(df: pd.DataFrame) -> str | None:
+        if "股票名称" in df.columns:
+            return "股票名称"
+        return df.columns[1] if len(df.columns) >= 2 else None
+
+    def _fill_names(df: pd.DataFrame, *, override: bool) -> None:
+        c, n = _code_col(df), _name_col(df)
+        if n is None:
+            return
+        df = df.copy()
+        df[c] = df[c].astype(str).str.zfill(6)
+        for code, name in zip(df[c], df[n].astype(str)):
+            name = (name or "").strip()
+            if not name or name.lower() == "nan":
+                continue
+            if override or code not in name_map:
+                name_map[code] = name
+
     if INDUSTRY.exists():
-        ind = pd.read_csv(INDUSTRY, dtype=str)
-        ind["股票代码"] = ind["股票代码"].astype(str).str.zfill(6)
-        ind_map = dict(zip(ind["股票代码"], ind["行业板块"].astype(str)))
+        ind = pd.read_csv(INDUSTRY, dtype=str, encoding="utf-8-sig")
+        c = _code_col(ind)
+        ind[c] = ind[c].astype(str).str.zfill(6)
+        if "行业板块" in ind.columns:
+            ind_map = dict(zip(ind[c], ind["行业板块"].astype(str)))
+        _fill_names(ind, override=False)
+    if LIST.exists():
+        nm = pd.read_csv(LIST, dtype=str, encoding="utf-8-sig")
+        _fill_names(nm, override=True)
     return name_map, ind_map
 
 

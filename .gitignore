@@ -100,3 +100,4 @@ data/quiet_limit_hold_horizon.json
 *.tmp
 *.bak
 .cache/
+logs/

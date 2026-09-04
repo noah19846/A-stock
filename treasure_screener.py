@@ -38,19 +38,9 @@ def load_bands(path: Path | None = None) -> dict:
 
 @lru_cache(maxsize=1)
 def load_maps() -> tuple[dict[str, str], dict[str, str]]:
-    name_map: dict[str, str] = {}
-    if LIST.exists():
-        nm = pd.read_csv(LIST, dtype=str)
-        c = "股票代码" if "股票代码" in nm.columns else nm.columns[0]
-        n = "股票名称" if "股票名称" in nm.columns else nm.columns[1]
-        nm[c] = nm[c].astype(str).str.zfill(6)
-        name_map = dict(zip(nm[c], nm[n].astype(str)))
-    ind_map: dict[str, str] = {}
-    if INDUSTRY.exists():
-        ind = pd.read_csv(INDUSTRY, dtype=str)
-        ind["股票代码"] = ind["股票代码"].astype(str).str.zfill(6)
-        ind_map = dict(zip(ind["股票代码"], ind["行业板块"].astype(str)))
-    return name_map, ind_map
+    from analyze_short_burst_features import load_maps as _load_maps
+
+    return _load_maps()
 
 
 @dataclass

@@ -344,6 +344,9 @@ def stocks_from_df(
         return []
     cutoff = pd.Timestamp(asof) if asof else None
     hot = hot_industries or {}
+    from analyze_short_burst_features import load_maps
+
+    name_map, _ = load_maps()
     stocks: list[dict] = []
     for _, row in df.iterrows():
         code = str(row["code"]).zfill(6)
@@ -375,9 +378,17 @@ def stocks_from_df(
             when_tip = when_raw.split("等待量价确认：", 1)[1].strip()
         elif advice in ("观察埋伏", "观察", "宝藏观察") and ("等待" in when_raw or "观察" in when_raw):
             when_tip = when_raw
+        raw_name = row.get("name", "")
+        if raw_name is None or (isinstance(raw_name, float) and raw_name != raw_name):
+            raw_name = ""
+        else:
+            raw_name = str(raw_name).strip()
+        if not raw_name or raw_name.lower() == "nan" or raw_name == code:
+            raw_name = ""
+        stock_name = raw_name or name_map.get(code) or code
         item: dict = {
             "code": code,
-            "name": str(row.get("name", "") or code),
+            "name": stock_name,
             "industry": str(row.get("industry", "") or ""),
             "advice": advice,
             "canBuy": can_buy,

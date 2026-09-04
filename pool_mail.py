@@ -178,9 +178,29 @@ def _esc(s) -> str:
     return html.escape("" if s is None else str(s))
 
 
-def _card_html(s: dict) -> str:
+def _name_map() -> dict[str, str]:
+    try:
+        from analyze_short_burst_features import load_maps
+
+        return load_maps()[0]
+    except Exception:
+        return {}
+
+
+def _stock_name(s: dict, name_map: dict[str, str] | None = None) -> str:
     code = str(s.get("code") or "").zfill(6)
-    name = str(s.get("name") or code)
+    name = str(s.get("name") or "").strip()
+    if name.lower() == "nan":
+        name = ""
+    if name and name != code:
+        return name
+    nm = name_map if name_map is not None else _name_map()
+    return nm.get(code) or name or code
+
+
+def _card_html(s: dict, name_map: dict[str, str] | None = None) -> str:
+    code = str(s.get("code") or "").zfill(6)
+    name = _stock_name(s, name_map)
     advice = str(s.get("advice") or "")
     when = str(s.get("when") or "").strip()
     ind = str(s.get("industry") or "")
@@ -243,6 +263,7 @@ def render_mail_html(
     """静态邮件 HTML：无 JS / 无 K 线，单栏适合手机。"""
     sections = sections or MAIL_SECTIONS
     filtered = filter_panels_for_mail(panels, sections)
+    name_map = _name_map()
     sections_html: list[str] = []
     toc_items: list[str] = []
     total = 0
@@ -267,7 +288,7 @@ def render_mail_html(
                 f'<p class="empty">暂无</p></section>'
             )
             continue
-        cards = [_card_html(s) for s in rows]
+        cards = [_card_html(s, name_map) for s in rows]
         sections_html.append(
             f'<section class="sec" id="{anchor}">'
             f'<div class="sec-head"><h2>{_esc(title)}</h2>'
