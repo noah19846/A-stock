@@ -648,7 +648,7 @@ def run_board(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
 
 
 def run_base(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
-    log("[2e/4] 底部横盘启动（base）…")
+    log("[2e/4] 底部启动（三连小阳+横盘）…")
     import bottom_base_screener as bbs
 
     t0 = time.time()

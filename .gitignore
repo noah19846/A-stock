@@ -82,6 +82,16 @@ data/volume_buy_scan.json
 data/quiet_limit_signals.csv
 data/quiet_limit_backtest.json
 data/quiet_limit_hold_horizon.json
+data/three_yang_backtest.json
+data/three_yang_trades.csv
+data/three_yang_backtest_base.json
+data/three_yang_trades_base.csv
+data/three_yang_backtest_nobase.json
+data/three_yang_trades_nobase.csv
+data/three_yang_signals.csv
+data/three_yang_exit_stats.json
+data/three_yang_launch_stats.json
+data/three_yang_launch_stats_15.json
 
 # Keep curated strategy configs (bands / registry / setup / exit)
 !data/short_burst_feature_bands.json

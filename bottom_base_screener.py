@@ -1,22 +1,18 @@
 """
-底部横盘启动：深跌后缩量箱体 → 温和放量突破 → 吃小目标（默认 +3%）就走。
+底部启动（三连小阳 + 底部横盘，严格相似）：
 
-硬规则（可买入 = 回测「宽松」档，约 710 笔 / +3% 胜率 ~62%）：
-  1. 距 60 日高点 ≤ −20%
-  2. 启动前 15 日振幅 ≤ 14%，涨幅 ∈ [−15%, +8%]，最大连阳 ≤ 4
-  3. 横盘均量 ≤ 20 日均量 × 1.0
-  4. 启动日阳线涨幅 1.2%～8%，非涨停；量/20 均 ∈ [1.05, 2.5]
-  5. 收盘突破前 15 日高点；贴近 20 日低（启动前 ≤ +10%）
-  6. 收盘/MA20 ∈ [0.90, 1.08]；MA20 近 5 日斜率 ≤ 3%
-  7. 主板非 ST，流通市值 25–700 亿
+形态：
+  · 三日小阳，日涨约 0.2%～3.5%；每日量比 1.05～2.0；相对三日前量 ≥1.15×
+  · 前 22 日横盘：振幅 ≤16%、|净涨跌| ≤10%、距 60 日低 ≤8%
 
-更严子集（距60高 ≤ −25% 且振幅 ≤ 12%）只加分，仍算可买入。
-
-离场提示：止盈 +3%；跌破箱体底（前 15 日+启动日最低 ×0.998）止损；最多 5 日。
+交易：
+  · 信号日尾盘买入
+  · 止损 −3%（盘中最低触及）；另标注横盘箱体底作结构止损参考
+  · 不设止盈；满 5 个交易日收盘卖
 
 用法：
-  .venv/bin/python bottom_base_screener.py 000912
-  .venv/bin/python bottom_base_screener.py --scan --asof 2026-08-20
+  .venv/bin/python bottom_base_screener.py 603693
+  .venv/bin/python bottom_base_screener.py --scan --asof 2026-09-10
 """
 
 from __future__ import annotations
@@ -29,28 +25,22 @@ import numpy as np
 import pandas as pd
 
 from analyze_short_burst_features import load_maps
-from volume_buy_screener import MAINBOARD_PREFIX, rolling_mean
+from three_yang_screener import (
+    BASE_ABS_RET_MAX,
+    BASE_DAYS,
+    BASE_DIST60_LOW_MAX,
+    BASE_RANGE_MAX,
+    MAINBOARD_PREFIX,
+    VOL_GROWTH_MIN,
+    match_at,
+)
 
 ROOT = Path(__file__).resolve().parent
 OUT_SCAN = ROOT / "data" / "bottom_base_signals.csv"
 
-LIMIT = 0.095
-MV_LO, MV_HI = 25.0, 700.0
-# 可买入 = 宽松档（回测主样本）
-DIST60_BUY = -0.20
-RNG15_BUY = 0.14
-# 更严子集仅用于加分
-DIST60_TIGHT = -0.25
-RNG15_TIGHT = 0.12
-TP = 0.03
-BOX_LOOKBACK = 15
-R1_LO, R1_HI = 0.012, 0.08
-VR_LO, VR_HI = 1.05, 2.5
-PX_MA20_LO, PX_MA20_HI = 0.90, 1.08
-NEAR_LOW_MAX = 0.10
-R15_LO, R15_HI = -0.15, 0.08
-STREAK_MAX = 4
-VBASE_MAX = 1.0
+STOP_PCT = 0.03
+HOLD_DAYS = 5
+MV_LO, MV_HI = 20.0, 800.0
 
 
 @dataclass
@@ -81,17 +71,6 @@ def _blank(code, name, industry, asof, why, metrics=None) -> Verdict:
     )
 
 
-def _max_up_streak(rets: np.ndarray) -> int:
-    best = cur = 0
-    for r in rets:
-        if np.isfinite(r) and r > 0:
-            cur += 1
-            best = max(best, cur)
-        else:
-            cur = 0
-    return int(best)
-
-
 def evaluate(
     code: str,
     name_map=None,
@@ -107,11 +86,15 @@ def evaluate(
     import daily_cache
 
     df = daily_cache.get(code, asof=asof)
-    if df is None or len(df) < 120:
+    if df is None or len(df) < 90:
         return _blank(code, name, industry, "", "无足够日线")
     asof_s = str(df["日期"].iloc[-1].date())
     if "ST" in name.upper() or name.startswith("*"):
         return _blank(code, name, industry, asof_s, "ST 跳过")
+
+    mv = float(df["mv"].iloc[-1]) if "mv" in df.columns else np.nan
+    if np.isfinite(mv) and (mv < MV_LO or mv > MV_HI):
+        return _blank(code, name, industry, asof_s, f"市值不在 {MV_LO:.0f}–{MV_HI:.0f} 亿")
 
     px = df["px"].to_numpy(dtype=np.float64)
     hi = df["hi"].to_numpy(dtype=np.float64)
@@ -119,139 +102,86 @@ def evaluate(
     op = df["op"].to_numpy(dtype=np.float64)
     vol = df["vol"].to_numpy(dtype=np.float64)
     ret = df["ret"].to_numpy(dtype=np.float64)
-    fac = df["后复权因子"].to_numpy(dtype=np.float64)
-    mv = float(df["mv"].iloc[-1])
-    if not np.isfinite(mv) or mv < MV_LO or mv > MV_HI:
-        return _blank(code, name, industry, asof_s, "市值不在 25–700 亿")
-    if vol[-1] <= 0:
-        return _blank(code, name, industry, asof_s, "停牌或无量")
-
     i = len(df) - 1
-    if i < 120:
-        return _blank(code, name, industry, asof_s, "日线太短")
 
-    r1 = float(ret[i]) if np.isfinite(ret[i]) else 0.0
-    if r1 >= LIMIT:
-        return _blank(code, name, industry, asof_s, "当日涨停，不做尾盘追板")
-    if not (R1_LO <= r1 <= R1_HI):
-        return _blank(code, name, industry, asof_s, "启动日涨幅不在 1.2%～8%")
-    if px[i] <= op[i]:
-        return _blank(code, name, industry, asof_s, "启动日非阳线")
+    hit = match_at(px, op, vol, ret, i, hi=hi, lo=lo, require_base=True)
+    if hit is None:
+        return _blank(code, name, industry, asof_s, "未满足三连小阳+底部横盘")
 
-    hi60 = float(np.max(hi[i - 59 : i + 1]))
-    dist60h = px[i] / hi60 - 1.0
-    if dist60h > DIST60_BUY:
-        return _blank(
-            code,
-            name,
-            industry,
-            asof_s,
-            f"位置不够低（距60高 {dist60h * 100:.1f}%）",
-        )
-
-    lb = BOX_LOOKBACK
-    box_lo_hfq = float(np.min(lo[i - lb : i + 1]))
-    box_hi_hfq = float(np.max(hi[i - lb : i]))
-    rng15 = box_hi_hfq / float(np.min(lo[i - lb : i])) - 1.0 if i >= lb else np.nan
-    if not np.isfinite(rng15) or rng15 > RNG15_BUY:
-        return _blank(
-            code,
-            name,
-            industry,
-            asof_s,
-            f"前{lb}日振幅过大（{rng15 * 100:.1f}%）" if np.isfinite(rng15) else "振幅缺失",
-        )
-
-    r15 = float(px[i - 1] / px[i - 1 - lb] - 1.0) if px[i - 1 - lb] > 0 else np.nan
-    if not np.isfinite(r15) or r15 > R15_HI or r15 < R15_LO:
-        return _blank(code, name, industry, asof_s, "横盘期涨跌过大，不像箱体")
-
-    streak = _max_up_streak(ret[i - lb : i])
-    if streak > STREAK_MAX:
-        return _blank(code, name, industry, asof_s, f"横盘期连阳偏多（{streak}）")
-
-    vol_ma20 = rolling_mean(vol, 20)
-    v20_prev = vol_ma20[i - 1]
-    v_base = float(np.nanmean(vol[i - lb : i]))
-    if not (np.isfinite(v20_prev) and v20_prev > 0 and v_base / v20_prev <= VBASE_MAX):
-        return _blank(code, name, industry, asof_s, "横盘期未明显缩量")
-
-    vr = vol[i] / v20_prev if v20_prev > 0 else np.nan
-    if not (np.isfinite(vr) and VR_LO <= vr <= VR_HI):
-        return _blank(
-            code,
-            name,
-            industry,
-            asof_s,
-            f"启动量能不合适（量比 {vr:.2f}）" if np.isfinite(vr) else "量比缺失",
-        )
-
-    lo20 = float(np.min(lo[i - 19 : i]))
-    near_low = px[i - 1] / lo20 - 1.0 if lo20 > 0 else np.nan
-    if not np.isfinite(near_low) or near_low > NEAR_LOW_MAX:
-        return _blank(code, name, industry, asof_s, "启动前离20日低偏远")
-
-    if px[i] < box_hi_hfq * 0.995:
-        return _blank(code, name, industry, asof_s, "未突破横盘高点")
-
-    ma20 = float(df["ma20"].iloc[i]) if "ma20" in df.columns else float(rolling_mean(px, 20)[i])
-    px_ma20 = px[i] / ma20 if np.isfinite(ma20) and ma20 > 0 else np.nan
-    if not np.isfinite(px_ma20) or px_ma20 > PX_MA20_HI or px_ma20 < PX_MA20_LO:
-        return _blank(code, name, industry, asof_s, "相对 MA20 过远/过弱")
-
-    ma20_prev5 = float(df["ma20"].iloc[i - 5]) if i >= 5 else np.nan
-    ma20_slope = ma20 / ma20_prev5 - 1.0 if np.isfinite(ma20_prev5) and ma20_prev5 > 0 else np.nan
-    if np.isfinite(ma20_slope) and ma20_slope > 0.03:
-        return _blank(code, name, industry, asof_s, "MA20 已陡升，偏中段")
-
-    # 图表为前复权：px/fac[-1] 与 load_qfq_bars 同尺度
+    # 箱体：横盘段 + 三连阳期间的最低/横盘最高（图表用前复权价）
+    base_end = i - 3
+    base_a = base_end - BASE_DAYS + 1
+    box_lo_hfq = float(np.nanmin(lo[base_a : i + 1]))
+    box_hi_hfq = float(np.nanmax(hi[base_a : base_end + 1]))
+    fac = df["后复权因子"].to_numpy(dtype=np.float64)
     fac_last = float(fac[i]) if np.isfinite(fac[i]) and fac[i] > 0 else 1.0
     box_bottom = round(box_lo_hfq / fac_last, 4)
     box_top = round(box_hi_hfq / fac_last, 4)
-    close_raw = float(df["收盘"].iloc[i])
-    target = round(close_raw * (1.0 + TP), 2)
-    stop_hint = round(box_bottom * 0.998, 4)
+    box_stop = round(box_bottom * 0.998, 4)
 
-    # 更严子集：只加分，仍全部可买入
-    tight = dist60h <= DIST60_TIGHT and rng15 <= RNG15_TIGHT
+    close_raw = float(df["收盘"].iloc[i])
+    stop_px = round(close_raw * (1.0 - STOP_PCT), 2)
+    r1 = float(ret[i]) if np.isfinite(ret[i]) else 0.0
+
+    score = 70.0
+    if hit.dist60_low is not None:
+        score += min(
+            20.0,
+            max(0.0, (BASE_DIST60_LOW_MAX - hit.dist60_low) / BASE_DIST60_LOW_MAX) * 20,
+        )
+    if hit.base_range is not None:
+        score += min(
+            15.0,
+            max(0.0, (BASE_RANGE_MAX - hit.base_range) / BASE_RANGE_MAX) * 15,
+        )
+    score += min(10.0, hit.cum3 / 0.06 * 10)
+    score += min(5.0, max(0.0, (hit.vol_growth - VOL_GROWTH_MIN) / 1.5) * 5)
 
     reasons = [
-        f"启动阳线 {r1 * 100:.2f}%",
-        f"距60日高点 {dist60h * 100:.1f}%",
-        f"前{lb}日振幅 {rng15 * 100:.1f}%",
-        f"量/20日均={vr:.2f}",
-        f"箱体底 {box_bottom}",
+        f"三日涨幅 {hit.ret1 * 100:.2f}/{hit.ret2 * 100:.2f}/{hit.ret3 * 100:.2f}%",
+        f"三日量比 {hit.vr1:.2f}/{hit.vr2:.2f}/{hit.vr3:.2f}",
+        f"量相对三日前 {hit.vol_growth:.2f}×",
+        f"箱体底 {box_bottom}（跌破可作结构止损参考）",
     ]
-    if tight:
-        reasons.append("更严子集（距60高≤−25% 且振幅≤12%）")
-    score = 40.0
-    score += min(25.0, max(0.0, -dist60h - 0.20) * 50)
-    score += min(15.0, max(0.0, RNG15_BUY - rng15) * 80)
-    score += min(10.0, max(0.0, vr - 1.0) * 12)
-    if tight:
-        score += 12
+    if hit.base_range is not None:
+        reasons.append(
+            f"前{BASE_DAYS}日振幅 {hit.base_range * 100:.1f}% "
+            f"（≤{BASE_RANGE_MAX * 100:.0f}%）"
+        )
+    if hit.base_ret is not None:
+        reasons.append(
+            f"横盘净涨跌 {hit.base_ret * 100:.1f}%（| |≤{BASE_ABS_RET_MAX * 100:.0f}%）"
+        )
+    if hit.dist60_low is not None:
+        reasons.append(
+            f"距60日低 {hit.dist60_low * 100:.1f}%（≤{BASE_DIST60_LOW_MAX * 100:.0f}%）"
+        )
 
-    stage = "可买入"
-    can_buy = True
     when = (
-        f"建议：底部横盘启动，尾盘/次日弱开可跟；"
-        f"止盈 +{TP * 100:.0f}%（约 {target}）；"
-        f"跌破箱体底 {stop_hint} 离场；最多 5 个交易日"
+        f"建议：三连小阳底部启动，当日尾盘买；"
+        f"固定止损 −{STOP_PCT * 100:.0f}%（约 {stop_px}）；"
+        f"箱体底 {box_bottom}（结构止损参考，约 {box_stop}）；"
+        f"不设止盈；满 {HOLD_DAYS} 个交易日收盘卖"
     )
 
     metrics = {
         "收盘": round(close_raw, 2),
         "今日涨跌%": round(r1 * 100, 2),
-        "距60日高点%": round(dist60h * 100, 1),
-        "前15日振幅%": round(rng15 * 100, 1),
-        "前15日涨幅%": round(r15 * 100, 1) if np.isfinite(r15) else None,
-        "量能比1_20": round(float(vr), 2),
-        "收盘/MA20": round(float(px_ma20), 3),
-        "流通市值亿": round(mv, 1),
+        "三日累计%": round(hit.cum3 * 100, 2),
+        "三日涨幅%": f"{hit.ret1 * 100:.2f}/{hit.ret2 * 100:.2f}/{hit.ret3 * 100:.2f}",
+        "三日量比": f"{hit.vr1:.2f}/{hit.vr2:.2f}/{hit.vr3:.2f}",
+        "量增长": round(hit.vol_growth, 2),
+        "横盘振幅%": None
+        if hit.base_range is None
+        else round(hit.base_range * 100, 1),
+        "横盘涨跌%": None if hit.base_ret is None else round(hit.base_ret * 100, 1),
+        "距60日低%": None
+        if hit.dist60_low is None
+        else round(hit.dist60_low * 100, 1),
+        "流通市值亿": None if not np.isfinite(mv) else round(mv, 1),
         "箱体底": box_bottom,
         "箱体顶": box_top,
-        "止盈价": target,
-        "止损参考": stop_hint,
+        "止损参考": stop_px,
         "strategy_ids": "bottom_base",
         "strategy_tags": "底部启动",
     }
@@ -261,8 +191,8 @@ def evaluate(
         name,
         industry,
         asof_s,
-        stage,
-        can_buy,
+        "可买入",
+        True,
         round(float(score), 1),
         1.0,
         when,
@@ -311,13 +241,13 @@ def print_verdict(v: Verdict) -> None:
     for k in [
         "收盘",
         "今日涨跌%",
-        "距60日高点%",
-        "前15日振幅%",
-        "量能比1_20",
-        "收盘/MA20",
+        "三日累计%",
+        "三日涨幅%",
+        "三日量比",
+        "横盘振幅%",
+        "距60日低%",
         "箱体底",
         "箱体顶",
-        "止盈价",
         "止损参考",
         "流通市值亿",
     ]:
@@ -325,7 +255,7 @@ def print_verdict(v: Verdict) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="底部横盘启动（+3% 小目标）")
+    parser = argparse.ArgumentParser(description="底部启动：三连小阳+底部横盘（严格）")
     parser.add_argument("code", nargs="?", help="单票评估")
     parser.add_argument("--scan", action="store_true")
     parser.add_argument("--asof", default=None)
@@ -343,8 +273,7 @@ def main() -> None:
     OUT_SCAN.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUT_SCAN, index=False, encoding="utf-8-sig")
     n_buy = int((out["stage"] == "可买入").sum()) if not out.empty else 0
-    n_watch = int((out["stage"] == "观察").sum()) if not out.empty else 0
-    print(f"底部启动 可买入 {n_buy} / 观察 {n_watch} → {OUT_SCAN}")
+    print(f"底部启动 可买入 {n_buy} → {OUT_SCAN}")
     if not out.empty:
         cols = [
             c
@@ -354,11 +283,9 @@ def main() -> None:
                 "stage",
                 "score",
                 "今日涨跌%",
-                "距60日高点%",
-                "前15日振幅%",
-                "量能比1_20",
-                "箱体底",
-                "止盈价",
+                "三日累计%",
+                "横盘振幅%",
+                "距60日低%",
             ]
             if c in out.columns
         ]

@@ -510,6 +510,8 @@ function sma(arr, n) {
         parts.push(chip('箱体底', fmtPrice(s.boxBottom), 'metric-box'));
       if (s.takeProfit != null)
         parts.push(chip('止盈', fmtPrice(s.takeProfit), 'metric-tp'));
+      if (s.stopRef != null)
+        parts.push(chip('止损', fmtPrice(s.stopRef), 'metric-box'));
       parts.push(chip('收盘', fmtPrice(s.close), chgClass(s.ret1d)));
       parts.push(chip('今日', fmtPct(s.ret1d, 2), chgClass(s.ret1d)));
       if (s.ret60 != null)
