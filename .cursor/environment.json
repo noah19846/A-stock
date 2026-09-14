@@ -1,0 +1,4 @@
+{
+  "name": "a-stock",
+  "install": "bash scripts/setup_env.sh"
+}

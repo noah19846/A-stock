@@ -1,0 +1,7 @@
+# A-stock screening / trading toolkit dependencies
+# Data source client (pulls in pandas, requests, beautifulsoup4, lxml, etc.)
+akshare>=1.12
+# Core data stack (also required directly by the scripts)
+pandas>=2.0
+numpy>=1.24
+requests>=2.28
