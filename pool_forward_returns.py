@@ -5,7 +5,7 @@
   1) 短线可短打
   2) 待观察（专门观察簿，按选股日在册）
   3) 长线可买入
-  4) 无量首板续板候选
+  4) 涨停箱体回踩候选
   5) 底部启动可买入
   6) 板后重启可买入
   7) 热门可买 / 轻仓可买
@@ -288,7 +288,7 @@ def load_board_buys(pick_date: str) -> pd.DataFrame:
     else:
         out = df[df["stage"].astype(str) == "可买入"]
     out = out.copy()
-    out["source"] = "无量首板"
+    out["source"] = "涨停箱体回踩"
     tags = out["strategy_tags"] if "strategy_tags" in out.columns else out["stage"]
     out["src_detail"] = tags.astype(str)
     return out[["code", "name", "source", "src_detail"]]
@@ -752,7 +752,7 @@ tr.eq td {{ font-weight: 600; border-top: 2px solid var(--line); background: #fa
   <nav class="nav">
     <h1>选股次日涨跌</h1>
     <div class="sub">{html.escape(start)} → {html.escape(end)}<br/>
-    每日六表：短线 / 长线 / 无量首板 / 底部启动 / 板后重启 / 热门<br/>
+    每日六表：短线 / 长线 / 涨停箱体回踩 / 底部启动 / 板后重启 / 热门<br/>
     数据来自信号池日期目录 · 名称点进雪球<br/>
     生成 {html.escape(generated_at)}</div>
     <div class="nav-dates">{nav}</div>
@@ -792,7 +792,7 @@ def build_sections(
         short = as_picks(load_short_buys(pick_date), "短线")
         watch = load_watch_names(pick_date)
         long = as_picks(load_long_buys(pick_date), "长线")
-        board = as_picks(load_board_buys(pick_date), "无量首板")
+        board = as_picks(load_board_buys(pick_date), "涨停箱体回踩")
         base = as_picks(load_base_buys(pick_date), "底部启动")
         relaunch = as_picks(load_relaunch_buys(pick_date), "板后重启")
         hot = load_hot_picks(pick_date)
@@ -802,7 +802,7 @@ def build_sections(
             make_block("long", "长线", long, pick_date, asof, f"可买入 {len(long)}"),
             make_block(
                 "board",
-                "无量首板",
+                "涨停箱体回踩",
                 board,
                 pick_date,
                 asof,

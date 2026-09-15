@@ -31,7 +31,7 @@ MAIL_SECTIONS: list[tuple[str, str, str]] = [
     ("long", "📈 中长线可买入", "buy"),
     ("scalp", "🎯 Scalp 可短打", "buy"),
     ("treasure", "💎 宝藏", "buy"),
-    ("board", "🟥 无量首板", "buy"),
+    ("board", "📦 涨停箱体回踩", "buy"),
     ("base", "📦 底部启动", "buy"),
     ("relaunch", "🔄 板后重启", "buy"),
 ]

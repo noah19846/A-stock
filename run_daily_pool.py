@@ -612,8 +612,8 @@ def run_treasure(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dic
 
 
 def run_board(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
-    log("[2d/4] 低位无量首板（board）…")
-    import quiet_limit_screener as qls
+    log("[2d/4] 涨停箱体回踩（board）…")
+    import box_retest_screener as qls
 
     t0 = time.time()
     df = qls.scan(asof=asof)
@@ -633,12 +633,12 @@ def run_board(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]
     n_buy = int((df_out["stage"] == "可买入").sum()) if not df_out.empty else 0
     n_watch = int((df_out["stage"] == "观察").sum()) if not df_out.empty else 0
     log(
-        f"  board: 共 {len(df_out)} 条（续板候选 {n_buy} / 观察 {n_watch}）"
+        f"  board: 共 {len(df_out)} 条（箱体回踩候选 {n_buy} / 观察 {n_watch}）"
         f"→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
         f"（筛选用时 {time.time() - t0:.1f}s）"
     )
     if len(df_out) > 0:
-        log_signal_table(df_out, title="board 明细")
+        log_signal_table(df_out, title="box_retest 明细")
     return {
         "rows": len(df_out),
         "buy": n_buy,
@@ -1377,7 +1377,7 @@ def run_one_day(
     if do_board:
         board_stat, board_stocks = run_board(day_dir, asof=asof)
     else:
-        log("[2d/4] 跳过无量首板")
+        log("[2d/4] 跳过涨停箱体回踩")
         board_stocks = existing("board")
     if do_base:
         base_stat, base_stocks = run_base(day_dir, asof=asof)
@@ -1505,12 +1505,12 @@ def main() -> None:
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--treasure-only", action="store_true")
-    parser.add_argument("--board-only", action="store_true", help="只跑低位无量首板（其它 tab 用已有 CSV）")
+    parser.add_argument("--board-only", action="store_true", help="只跑涨停箱体回踩（其它 tab 用已有 CSV）")
     parser.add_argument("--base-only", action="store_true", help="只跑底部横盘启动（其它 tab 用已有 CSV）")
     parser.add_argument("--relaunch-only", action="store_true", help="只跑板后重启（其它 tab 用已有 CSV）")
     parser.add_argument("--hot-only", action="store_true", help="只跑热门板块角色 HTML")
     parser.add_argument("--skip-treasure", action="store_true", help="不跑宝藏观察池")
-    parser.add_argument("--skip-board", action="store_true", help="不跑无量首板")
+    parser.add_argument("--skip-board", action="store_true", help="不跑涨停箱体回踩")
     parser.add_argument("--skip-base", action="store_true", help="不跑底部启动")
     parser.add_argument("--skip-relaunch", action="store_true", help="不跑板后重启")
     parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
@@ -1572,8 +1572,7 @@ def main() -> None:
     do_long = True
     do_short = True
     do_treasure = not args.skip_treasure
-    # 无量首板当前不可稳定执行，默认停用；需要研究时仍可用 --board-only。
-    do_board = False
+    do_board = not args.skip_board
     do_base = not args.skip_base
     do_relaunch = not args.skip_relaunch
     do_hot = not args.skip_hot
