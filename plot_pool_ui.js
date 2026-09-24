@@ -399,6 +399,7 @@ function sma(arr, n) {
       if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'badge-strategy-' + k;
       if (k === 'bottom_base') return 'badge-strategy-bottom_base';
       if (k === 'board_relaunch') return 'badge-strategy-board_relaunch';
+      if (k === 'wyckoff') return 'badge-strategy-wyckoff';
       return 'badge-strategy-default';
     }
     function navStrategyClass(id) {
@@ -411,6 +412,7 @@ function sma(arr, n) {
       if (k === 'quiet_limit_up' || k === 'low_limit_up' || k === 'quiet_first') return 'nav-strategy nav-strategy-' + k;
       if (k === 'bottom_base') return 'nav-strategy nav-strategy-bottom_base';
       if (k === 'board_relaunch') return 'nav-strategy nav-strategy-board_relaunch';
+      if (k === 'wyckoff') return 'nav-strategy nav-strategy-wyckoff';
       return 'nav-strategy nav-strategy-default';
     }
     /** 展示用策略标签：隐藏「默认」 */
@@ -552,7 +554,7 @@ function sma(arr, n) {
       return '观察';
     }
     const chartInstances = {};
-    const panelBuilt = { long: false, short: false, treasure: false, board: false, base: false, relaunch: false };
+    const panelBuilt = { long: false, short: false, treasure: false, board: false, base: false, relaunch: false, wyckoff: false };
     let panesReady = false;
 
     function disposeCharts() {
@@ -590,6 +592,7 @@ function sma(arr, n) {
         const nb = document.getElementById('n-board');
         const nbase = document.getElementById('n-base');
         const nr = document.getElementById('n-relaunch');
+        const nwyc = document.getElementById('n-wyckoff');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
@@ -598,6 +601,7 @@ function sma(arr, n) {
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
         if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';
         if (nr) nr.textContent = '(' + String((PANELS.relaunch || []).length) + ')';
+        if (nwyc) nwyc.textContent = '(' + String((PANELS.wyckoff || []).length) + ')';
       }
     }
     function ensureTabPanes() {
@@ -612,7 +616,8 @@ function sma(arr, n) {
         '<div id="nav-treasure" class="tab-pane" hidden></div>' +
         '<div id="nav-board" class="tab-pane" hidden></div>' +
         '<div id="nav-base" class="tab-pane" hidden></div>' +
-        '<div id="nav-relaunch" class="tab-pane" hidden></div>';
+        '<div id="nav-relaunch" class="tab-pane" hidden></div>' +
+        '<div id="nav-wyckoff" class="tab-pane" hidden></div>';
       main.innerHTML =
         '<div id="main-long" class="tab-pane"></div>' +
         '<div id="main-short" class="tab-pane" hidden></div>' +
@@ -621,7 +626,8 @@ function sma(arr, n) {
         '<div id="main-treasure" class="tab-pane" hidden></div>' +
         '<div id="main-board" class="tab-pane" hidden></div>' +
         '<div id="main-base" class="tab-pane" hidden></div>' +
-        '<div id="main-relaunch" class="tab-pane" hidden></div>';
+        '<div id="main-relaunch" class="tab-pane" hidden></div>' +
+        '<div id="main-wyckoff" class="tab-pane" hidden></div>';
       panesReady = true;
     }
     function resizeTabCharts(tab) {
@@ -638,7 +644,7 @@ function sma(arr, n) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
       updateHeaderCounts(tab);
-      ['long', 'short', 'watch', 'scalp', 'treasure', 'board', 'base', 'relaunch'].forEach(t => {
+      ['long', 'short', 'watch', 'scalp', 'treasure', 'board', 'base', 'relaunch', 'wyckoff'].forEach(t => {
         const hide = t !== tab;
         const n = document.getElementById('nav-' + t);
         const m = document.getElementById('main-' + t);
@@ -792,6 +798,7 @@ function sma(arr, n) {
         const nb = document.getElementById('n-board');
         const nbase = document.getElementById('n-base');
         const nr = document.getElementById('n-relaunch');
+        const nwyc = document.getElementById('n-wyckoff');
         if (nl) nl.textContent = '(' + String((PANELS.long || []).length) + ')';
         if (nt) nt.textContent = '(' + String((PANELS.treasure || []).length) + ')';
         if (ns) ns.textContent = '(' + String((PANELS.short || []).length) + ')';
@@ -800,6 +807,7 @@ function sma(arr, n) {
         if (nb) nb.textContent = '(' + String((PANELS.board || []).length) + ')';
         if (nbase) nbase.textContent = '(' + String((PANELS.base || []).length) + ')';
         if (nr) nr.textContent = '(' + String((PANELS.relaunch || []).length) + ')';
+        if (nwyc) nwyc.textContent = '(' + String((PANELS.wyckoff || []).length) + ')';
         showTab(currentTab);
         return;
       }

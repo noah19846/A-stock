@@ -118,22 +118,19 @@ def verdict_from_feat(
 
     hot = feat["前5日涨幅%"] > 8 or feat["距20日高点%"] > -2 or feat.get("前1日涨幅%", 0) > 3
     mv_lo, mv_hi = mv_bounds(bands)
-    bad_liq = (
-        feat["流通市值亿"] < mv_lo
-        or feat["流通市值亿"] > mv_hi
-        or feat["换手率%"] > 12
-    )
+    bad_mv = feat["流通市值亿"] < mv_lo or feat["流通市值亿"] > mv_hi
+    bad_turn = feat["换手率%"] > 12 or feat["换手率%"] < 0.8
 
     if hot:
         # 偏热不再进池（避免 signals 被「已偏强」刷成千级）
         stage = "已偏强"
         can = False
         when = "近端偏热或贴20高，短线首打盈亏比差"
-    elif bad_liq:
+    elif bad_turn:
         stage = "不关注"
         can = False
-        when = "市值/换手不适合短线进出"
-    elif hard >= buy_hard and soft >= buy_soft:
+        when = "换手不适合短线进出"
+    elif hard >= buy_hard and soft >= buy_soft and not bad_mv:
         stage = "可短打"
         can = True
         ex = bands.get("exit") or {}
@@ -157,6 +154,8 @@ def verdict_from_feat(
             "接近短线爆发画像，入观察簿：阴线后收盘贴回MA5且硬条件不太差则升级"
             "（不要求再过 default 可短打）"
         )
+        if bad_mv:
+            when += "；市值超出可交易区间，仅保留观察"
     else:
         stage = "不关注"
         can = False

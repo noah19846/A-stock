@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -43,13 +44,26 @@ COLS = [
     "后复权因子",
 ]
 
-CLIST_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+CLIST_URLS = (
+    "https://push2delay.eastmoney.com/api/qt/clist/get",
+    "https://push2.eastmoney.com/api/qt/clist/get",
+)
+SINA_COUNT_URL = (
+    "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeStockCount"
+)
+SINA_SPOT_URL = (
+    "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeData"
+)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Referer": "https://quote.eastmoney.com/",
 }
 FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
 FIELDS = "f12,f14,f2,f15,f16,f17,f18,f5,f6,f8,f20,f21"
+MIN_SPOT_ROWS = 4000
+REQUEST_ATTEMPTS = 3
 
 
 def log(msg: str) -> None:
@@ -61,6 +75,59 @@ def _session() -> requests.Session:
     s.trust_env = False
     s.headers.update(HEADERS)
     return s
+
+
+def _get_text_with_retry(
+    urls: tuple[str, ...],
+    params: dict,
+    label: str,
+    *,
+    attempts: int = REQUEST_ATTEMPTS,
+) -> str:
+    errors: list[str] = []
+    for attempt in range(1, attempts + 1):
+        for url in urls:
+            session = _session()
+            try:
+                response = session.get(url, params=params, timeout=20)
+                response.raise_for_status()
+                return response.text
+            except (requests.RequestException, ValueError) as exc:
+                errors.append(f"{url}: {type(exc).__name__}: {exc}")
+            finally:
+                session.close()
+        if attempt < attempts:
+            delay = 0.5 * (2 ** (attempt - 1))
+            log(f"  {label} 第 {attempt} 次失败，{delay:.1f}s 后重试...")
+            time.sleep(delay)
+    detail = errors[-1] if errors else "unknown error"
+    raise RuntimeError(f"{label} 连续失败 {attempts} 次；最后错误：{detail}")
+
+
+def _validate_spot(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    required = {
+        "代码",
+        "名称",
+        "最新价",
+        "最高",
+        "最低",
+        "今开",
+        "昨收",
+        "成交量_手",
+        "成交额",
+        "换手率_pct",
+        "总市值",
+        "流通市值",
+    }
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError(f"{source} 截面缺少字段：{', '.join(missing)}")
+    df = df.drop_duplicates(subset=["代码"], keep="last").reset_index(drop=True)
+    if len(df) < MIN_SPOT_ROWS:
+        raise RuntimeError(
+            f"{source} 截面仅 {len(df)} 行，低于完整性下限 {MIN_SPOT_ROWS}"
+        )
+    return df
 
 
 def normalize_date(s: str) -> str:
@@ -83,7 +150,6 @@ def latest_trade_date(asof: str | None = None) -> str:
 
 
 def fetch_em_spot() -> pd.DataFrame:
-    session = _session()
     params = {
         "pn": "1",
         "pz": "100",
@@ -96,17 +162,20 @@ def fetch_em_spot() -> pd.DataFrame:
         "fs": FS,
         "fields": FIELDS,
     }
-    r = session.get(CLIST_URL, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()["data"]
+    text = _get_text_with_retry(CLIST_URLS, params, "东财截面第 1 页")
+    data = json.loads(text).get("data")
+    if not data or not data.get("diff"):
+        raise RuntimeError("东财截面第 1 页返回空数据")
     total = int(data["total"])
     rows = list(data["diff"])
     pages = (total + 99) // 100
     for pn in range(2, pages + 1):
         params["pn"] = str(pn)
-        r = session.get(CLIST_URL, params=params, timeout=20)
-        r.raise_for_status()
-        rows.extend(r.json()["data"]["diff"])
+        text = _get_text_with_retry(CLIST_URLS, params, f"东财截面第 {pn} 页")
+        page_data = json.loads(text).get("data")
+        if not page_data or not page_data.get("diff"):
+            raise RuntimeError(f"东财截面第 {pn} 页返回空数据")
+        rows.extend(page_data["diff"])
 
     df = pd.DataFrame(rows).rename(
         columns={
@@ -125,7 +194,75 @@ def fetch_em_spot() -> pd.DataFrame:
         }
     )
     df["代码"] = df["代码"].astype(str).str.zfill(6)
-    return df
+    return _validate_spot(df, "东财")
+
+
+def _sina_rows_to_spot(rows: list[dict]) -> pd.DataFrame:
+    raw = pd.DataFrame(rows)
+    return pd.DataFrame(
+        {
+            "代码": raw["code"].astype(str).str.zfill(6),
+            "名称": raw["name"],
+            "最新价": pd.to_numeric(raw["trade"], errors="coerce"),
+            "最高": pd.to_numeric(raw["high"], errors="coerce"),
+            "最低": pd.to_numeric(raw["low"], errors="coerce"),
+            "今开": pd.to_numeric(raw["open"], errors="coerce"),
+            "昨收": pd.to_numeric(raw["settlement"], errors="coerce"),
+            # 新浪成交量单位为股；下游统一接收“手”。
+            "成交量_手": pd.to_numeric(raw["volume"], errors="coerce") / 100.0,
+            "成交额": pd.to_numeric(raw["amount"], errors="coerce"),
+            # turnoverratio 已是百分数；市值字段单位为万元。
+            "换手率_pct": pd.to_numeric(raw["turnoverratio"], errors="coerce"),
+            "总市值": pd.to_numeric(raw["mktcap"], errors="coerce") * 10000.0,
+            "流通市值": pd.to_numeric(raw["nmc"], errors="coerce") * 10000.0,
+        }
+    )
+
+
+def fetch_sina_spot() -> pd.DataFrame:
+    from akshare.utils import demjson
+
+    count_text = _get_text_with_retry(
+        (SINA_COUNT_URL,), {"node": "hs_a"}, "新浪截面页数"
+    )
+    match = re.search(r"\d+", count_text)
+    if not match:
+        raise RuntimeError(f"新浪截面页数无法解析：{count_text[:100]!r}")
+    page_count = (int(match.group()) + 79) // 80
+    base_params = {
+        "page": "1",
+        "num": "80",
+        "sort": "symbol",
+        "asc": "1",
+        "node": "hs_a",
+        "symbol": "",
+        "_s_r_a": "page",
+    }
+    rows: list[dict] = []
+    for page in range(1, page_count + 1):
+        params = {**base_params, "page": str(page)}
+        text = _get_text_with_retry(
+            (SINA_SPOT_URL,), params, f"新浪截面第 {page} 页"
+        )
+        page_rows = demjson.decode(text)
+        if not isinstance(page_rows, list) or not page_rows:
+            raise RuntimeError(f"新浪截面第 {page} 页返回空数据")
+        rows.extend(page_rows)
+
+    df = _sina_rows_to_spot(rows)
+    return _validate_spot(df, "新浪")
+
+
+def fetch_market_spot() -> pd.DataFrame:
+    try:
+        spot = fetch_em_spot()
+        log("  行情源：东财")
+        return spot
+    except Exception as exc:
+        log(f"  东财截面失败，切换新浪备用源：{type(exc).__name__}: {exc}")
+    spot = fetch_sina_spot()
+    log("  行情源：新浪（备用）")
+    return spot
 
 
 def to_num(v) -> float | None:
@@ -676,8 +813,8 @@ def repair_minority_codes(
         log("无待修复代码。")
         return
     if spot is None:
-        log("拉取东财截面供补当日...")
-        spot = fetch_em_spot()
+        log("拉取全市场截面供补当日...")
+        spot = fetch_market_spot()
     spot_map = {str(r["代码"]).zfill(6): r for _, r in spot.iterrows()}
     log(f"开始修复 {len(codes)} 支：{', '.join(codes)}")
     for i, code in enumerate(codes, 1):
@@ -792,8 +929,8 @@ def main() -> None:
         )
 
     t_spot = time.time()
-    log("拉取东财全市场延迟行情...")
-    spot = fetch_em_spot()
+    log("拉取全市场行情（东财主源 / 新浪备用）...")
+    spot = fetch_market_spot()
     spot_sec = time.time() - t_spot
     log(f"截面行数={len(spot)}  拉取耗时 {spot_sec:.1f}s")
 

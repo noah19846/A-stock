@@ -511,6 +511,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
     board_stocks = panel("board")
     base_stocks = panel("base")
     relaunch_stocks = panel("relaunch")
+    wyckoff_stocks = panel("wyckoff")
     out_html = day_dir / "index.html"
     build_html(
         asof,
@@ -526,6 +527,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
             "board": board_stocks,
             "base": base_stocks,
             "relaunch": relaunch_stocks,
+            "wyckoff": wyckoff_stocks,
         },
     )
     log(
@@ -533,7 +535,7 @@ def rebuild_html_from_csvs(day_dir: Path, asof: str) -> None:
         f"long={len(long_stocks)} short={len(short_stocks)} watch={len(watch_stocks)} "
         f"scalp={len(scalp_stocks)} treasure={len(treasure_stocks)} "
         f"board={len(board_stocks)} base={len(base_stocks)} "
-        f"relaunch={len(relaunch_stocks)} → {out_html}"
+        f"relaunch={len(relaunch_stocks)} wyckoff={len(wyckoff_stocks)} → {out_html}"
     )
 
 
@@ -724,6 +726,47 @@ def run_relaunch(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dic
         "watch": n_watch,
         "charts": len(stocks),
         "market": mkt,
+    }, stocks
+
+
+def run_wyckoff(day_dir: Path, asof: str | None = None) -> tuple[dict, list[dict]]:
+    log("[2g/4] 威科夫 · 实验（wyckoff）…")
+    import wyckoff_screener as wks
+
+    t0 = time.time()
+    df = wks.scan(asof=asof)
+
+    out_dir = day_dir / "wyckoff"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df_out = df.copy() if not df.empty else df
+    # 实验 tab：不做「可买入」落盘，全部进 signals 供观察
+    pd.DataFrame().to_csv(out_dir / "now.csv", index=False, encoding="utf-8-sig")
+    df_out.to_csv(out_dir / "signals.csv", index=False, encoding="utf-8-sig")
+    stocks = stocks_from_df(
+        df_out, asof=asof, hot_industries=hot_map_for_day_dir(day_dir, asof)
+    )
+    n_markup = (
+        int((df_out["stage"] == "第一次拉伸").sum()) if not df_out.empty else 0
+    )
+    n_accum = int((df_out["stage"] == "吸筹").sum()) if not df_out.empty else 0
+    n_range = int((df_out["stage"] == "震荡").sum()) if not df_out.empty else 0
+    log(
+        f"  wyckoff: 共 {len(df_out)} 条"
+        f"（拉伸 {n_markup} / 吸筹 {n_accum} / 震荡 {n_range}）"
+        f"→ {out_dir / 'signals.csv'}；HTML 列表 {len(stocks)} 只"
+        f"（筛选用时 {time.time() - t0:.1f}s）"
+    )
+    if len(df_out) > 0:
+        log_signal_table(df_out, title="wyckoff 明细")
+    return {
+        "rows": len(df_out),
+        "buy": 0,
+        "watch": len(df_out),
+        "markup": n_markup,
+        "accum": n_accum,
+        "range": n_range,
+        "charts": len(stocks),
+        "experimental": True,
     }, stocks
 
 
@@ -1194,6 +1237,7 @@ def write_meta(
     board_stat: dict | None = None,
     base_stat: dict | None = None,
     relaunch_stat: dict | None = None,
+    wyckoff_stat: dict | None = None,
     watch_stat: dict | None = None,
 ) -> None:
     meta = {
@@ -1211,6 +1255,7 @@ def write_meta(
         "board": board_stat or {},
         "base": base_stat or {},
         "relaunch": relaunch_stat or {},
+        "wyckoff": wyckoff_stat or {},
         "workflow": {
             "official": "正式：刷盘中价 quality=intraday；完整 HTML 写入 signal_pool/日期/（交易入口）",
             "close": "收盘：重拉 quality=close；不生成 HTML；短线筛观察并增量入观察簿（不覆盖已在册）",
@@ -1233,7 +1278,17 @@ def write_meta(
             prev = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             prev = {}
-    for key in ("long", "short", "watch", "scalp", "treasure", "board", "base", "relaunch"):
+    for key in (
+        "long",
+        "short",
+        "watch",
+        "scalp",
+        "treasure",
+        "board",
+        "base",
+        "relaunch",
+        "wyckoff",
+    ):
         if not meta.get(key) and prev.get(key):
             meta[key] = prev[key]
     path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1272,19 +1327,20 @@ def run_one_day(
     do_board: bool = True,
     do_base: bool = True,
     do_relaunch: bool = True,
+    do_wyckoff: bool = True,
     short_bands: Path | None = None,
     short_strategy_ids: list[str] | None = None,
     scalp_strategy_ids: list[str] | None = None,
     preload: bool = True,
     update_watch_book: bool = True,
     send_mail: bool = False,
-) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict, dict]:
     """生成单日 signal_pool（+可选 hot_sectors）。
 
     official：完整筛选并写入 signal_pool/日期/ HTML（交易入口）。
     close：不生成 HTML，仅短线筛「观察」并增量入观察簿。
     """
-    empty = ({}, {}, {}, {}, {}, {}, {}, {})
+    empty = ({}, {}, {}, {}, {}, {}, {}, {}, {})
 
     if mode == "close":
         log(f"收盘 {asof}：不生成信号池 HTML（交易看正式写入的日期目录）")
@@ -1343,6 +1399,7 @@ def run_one_day(
     board_stat: dict = {}
     base_stat: dict = {}
     relaunch_stat: dict = {}
+    wyckoff_stat: dict = {}
     long_stocks: list[dict] = []
     short_stocks: list[dict] = []
     treasure_stocks: list[dict] = []
@@ -1350,6 +1407,7 @@ def run_one_day(
     board_stocks: list[dict] = []
     base_stocks: list[dict] = []
     relaunch_stocks: list[dict] = []
+    wyckoff_stocks: list[dict] = []
 
     def existing(name: str) -> list[dict]:
         return stocks_from_df(
@@ -1389,6 +1447,11 @@ def run_one_day(
     else:
         log("[2f/4] 跳过板后重启")
         relaunch_stocks = existing("relaunch")
+    if do_wyckoff:
+        wyckoff_stat, wyckoff_stocks = run_wyckoff(day_dir, asof=asof)
+    else:
+        log("[2g/4] 跳过威科夫实验")
+        wyckoff_stocks = existing("wyckoff")
     watch_stocks: list[dict] = []
     watch_stat: dict = {}
     if do_short:
@@ -1421,7 +1484,15 @@ def run_one_day(
         watch_stocks = load_watch_book_stocks(asof, day_dir, refresh=False)
         watch_stat = {"rows": len(watch_stocks), "watch": len(watch_stocks)}
 
-    if do_long or do_short or do_treasure or do_board or do_base or do_relaunch:
+    if (
+        do_long
+        or do_short
+        or do_treasure
+        or do_board
+        or do_base
+        or do_relaunch
+        or do_wyckoff
+    ):
         from plot_watch_pool import build_html
 
         panels = {
@@ -1433,6 +1504,7 @@ def run_one_day(
             "board": board_stocks,
             "base": base_stocks,
             "relaunch": relaunch_stocks,
+            "wyckoff": wyckoff_stocks,
         }
         out_html = day_dir / "index.html"
         build_html(
@@ -1446,7 +1518,8 @@ def run_one_day(
             f"  合并图: long={len(long_stocks)} short={len(short_stocks)} "
             f"watch={len(watch_stocks)} scalp={len(scalp_stocks)} "
             f"treasure={len(treasure_stocks)} board={len(board_stocks)} "
-            f"base={len(base_stocks)} relaunch={len(relaunch_stocks)} → {out_html}"
+            f"base={len(base_stocks)} relaunch={len(relaunch_stocks)} "
+            f"wyckoff={len(wyckoff_stocks)} → {out_html}"
         )
         write_meta(
             day_dir,
@@ -1459,6 +1532,7 @@ def run_one_day(
             board_stat=board_stat,
             base_stat=base_stat,
             relaunch_stat=relaunch_stat,
+            wyckoff_stat=wyckoff_stat,
             watch_stat=watch_stat,
         )
         if send_mail:
@@ -1476,6 +1550,7 @@ def run_one_day(
         board_stat,
         base_stat,
         relaunch_stat,
+        wyckoff_stat,
     )
 
 
@@ -1508,11 +1583,13 @@ def main() -> None:
     parser.add_argument("--board-only", action="store_true", help="只跑涨停箱体回踩（其它 tab 用已有 CSV）")
     parser.add_argument("--base-only", action="store_true", help="只跑底部横盘启动（其它 tab 用已有 CSV）")
     parser.add_argument("--relaunch-only", action="store_true", help="只跑板后重启（其它 tab 用已有 CSV）")
+    parser.add_argument("--wyckoff-only", action="store_true", help="只跑威科夫实验 tab（其它 tab 用已有 CSV）")
     parser.add_argument("--hot-only", action="store_true", help="只跑热门板块角色 HTML")
     parser.add_argument("--skip-treasure", action="store_true", help="不跑宝藏观察池")
     parser.add_argument("--skip-board", action="store_true", help="不跑涨停箱体回踩")
     parser.add_argument("--skip-base", action="store_true", help="不跑底部启动")
     parser.add_argument("--skip-relaunch", action="store_true", help="不跑板后重启")
+    parser.add_argument("--skip-wyckoff", action="store_true", help="不跑威科夫实验")
     parser.add_argument("--skip-hot", action="store_true", help="不跑热门板块")
     parser.add_argument(
         "--skip-watch-book",
@@ -1575,6 +1652,7 @@ def main() -> None:
     do_board = not args.skip_board
     do_base = not args.skip_base
     do_relaunch = not args.skip_relaunch
+    do_wyckoff = not args.skip_wyckoff
     do_hot = not args.skip_hot
     if args.hot_only:
         do_long = False
@@ -1583,7 +1661,17 @@ def main() -> None:
         do_board = False
         do_base = False
         do_relaunch = False
+        do_wyckoff = False
         do_hot = True
+    elif args.wyckoff_only:
+        do_long = False
+        do_short = False
+        do_treasure = False
+        do_board = False
+        do_base = False
+        do_relaunch = False
+        do_wyckoff = True
+        do_hot = False
     elif args.relaunch_only:
         do_long = False
         do_short = False
@@ -1591,6 +1679,7 @@ def main() -> None:
         do_board = False
         do_base = False
         do_relaunch = True
+        do_wyckoff = False
         do_hot = False
     elif args.base_only:
         do_long = False
@@ -1599,6 +1688,7 @@ def main() -> None:
         do_board = False
         do_base = True
         do_relaunch = False
+        do_wyckoff = False
         do_hot = False
     elif args.board_only:
         do_long = False
@@ -1607,6 +1697,7 @@ def main() -> None:
         do_board = True
         do_base = False
         do_relaunch = False
+        do_wyckoff = False
         do_hot = False
     elif args.treasure_only:
         do_long = False
@@ -1615,12 +1706,14 @@ def main() -> None:
         do_board = False
         do_base = False
         do_relaunch = False
+        do_wyckoff = False
         do_hot = False
     elif args.long_only:
         do_short = False
         do_board = False
         do_base = False
         do_relaunch = False
+        do_wyckoff = False
         do_hot = False
     elif args.short_only:
         do_long = False
@@ -1628,6 +1721,7 @@ def main() -> None:
         do_board = False
         do_base = False
         do_relaunch = False
+        do_wyckoff = False
         do_hot = False
 
     short_bands = Path(args.short_bands) if args.short_bands.strip() else None
@@ -1672,7 +1766,7 @@ def main() -> None:
                 if preload:
                     raise SystemExit(msg)
                 log(f"  跳过 {d}：{msg}")
-                return ({}, {}, {}, {}, {}, {}, {}, {})
+                return ({}, {}, {}, {}, {}, {}, {}, {}, {})
             log(
                 f"  回放截面 {info['trade_date']} @ {info['snapshot_at']}  "
                 f"n={info.get('n_loaded', info.get('n_bars'))}"
@@ -1688,6 +1782,7 @@ def main() -> None:
                 do_board=do_board,
                 do_base=do_base,
                 do_relaunch=do_relaunch,
+                do_wyckoff=do_wyckoff,
                 short_bands=short_bands,
                 short_strategy_ids=short_ids,
                 scalp_strategy_ids=scalp_ids,
@@ -1720,7 +1815,7 @@ def main() -> None:
         hit = False
         for d in dates:
             log(f"\n===== {d} =====")
-            _, short_stat, _, _, _, _, _, _ = run_day(d, preload=False)
+            _, short_stat, _, _, _, _, _, _, _ = run_day(d, preload=False)
             if do_short and short_has_strict_or_r3_buy(short_stat):
                 hit = True
                 log(f"  ✓ {d} strict/r3 有可短打")
@@ -1729,7 +1824,7 @@ def main() -> None:
             log("\n区间内无 strict/r3 可短打，往前继续生成…")
             for d in prev_trade_dates_before(from_d, n=180):
                 log(f"\n===== 回溯 {d} =====")
-                _, short_stat, _, _, _, _, _, _ = run_day(d, preload=False)
+                _, short_stat, _, _, _, _, _, _, _ = run_day(d, preload=False)
                 if short_has_strict_or_r3_buy(short_stat):
                     log(f"  ✓ 回溯命中 {d}（strict/r3 有可短打），停止")
                     hit = True
@@ -1765,7 +1860,13 @@ def main() -> None:
     _, _, _, _, hot_stat, _, _, _ = run_day(asof, preload=True)
     log(f"完成，耗时 {time.time() - t0:.0f}s")
     if mode == "official" and (
-        do_long or do_short or do_treasure or do_board or do_base or do_relaunch
+        do_long
+        or do_short
+        or do_treasure
+        or do_board
+        or do_base
+        or do_relaunch
+        or do_wyckoff
     ):
         log(f"打开信号池: {pool_day_dir(asof, mode) / 'index.html'}")
     elif mode == "close":

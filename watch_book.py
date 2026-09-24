@@ -174,6 +174,13 @@ def _evaluate_code(code: str, asof: str, bands: dict, name_map, ind_map):
     return v, feat, name
 
 
+def _watch_bands(bands: dict) -> dict:
+    """观察簿不设流通市值上下限；市值限制仍由短线可交易阶段执行。"""
+    out = dict(bands)
+    out["mv_yi"] = [0.0, 1.0e12]
+    return out
+
+
 def _upsert_review(
     conn: sqlite3.Connection,
     *,
@@ -241,6 +248,7 @@ def review_day(
     """
     asof = str(asof)[:10]
     bands = load_bands(bands_path or BANDS)
+    watch_bands = _watch_bands(bands)
     wb = bands.get("watch_book") or {}
     max_days = int(wb.get("max_days", 12))
     name_map, ind_map = load_maps()
@@ -276,7 +284,7 @@ def review_day(
         codes = sorted(set(open_map) | today_watch)
 
         for code in codes:
-            v, feat, name = _evaluate_code(code, asof, bands, name_map, ind_map)
+            v, feat, name = _evaluate_code(code, asof, watch_bands, name_map, ind_map)
             if v is None or feat is None:
                 counts["skip"] += 1
                 continue
@@ -326,7 +334,7 @@ def review_day(
                 stage=v.stage,
                 can_trade=bool(v.can_trade),
                 feat=feat,
-                bands=bands,
+                bands=watch_bands,
                 days_open=days_open,
                 max_days=max_days,
                 when=v.when,

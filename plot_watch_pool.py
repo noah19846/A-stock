@@ -166,7 +166,7 @@ __CSS__
   </div>
   <script>
     __DATA_JS__
-    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', watch: '👀 观察簿', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '📦 涨停箱体回踩', base: '📦 底部启动', relaunch: '🔄 板后重启' };
+    const TAB_LABEL = { long: '📈 中长线', short: '⚡ 短线', watch: '👀 观察簿', scalp: '🎯 Scalp', treasure: '💎 宝藏观察', board: '📦 涨停箱体回踩', base: '📦 底部启动', relaunch: '🔄 板后重启', wyckoff: '🧪 威科夫 · 实验' };
     let currentTab = 'long';
     let charts = [];
 __CHART_JS__
@@ -513,6 +513,11 @@ main {
   color: #2e7d32;
   border-color: #a5d6a7;
 }
+.badge-strategy-wyckoff {
+  background: #efe8ff;
+  color: #5e35b1;
+  border-color: #d1c4e9;
+}
 .nav-strategy {
   display: inline-flex;
   align-items: center;
@@ -532,6 +537,7 @@ main {
 .nav-strategy-quiet_limit_up, .nav-strategy-low_limit_up, .nav-strategy-quiet_first { background: #ffe8e6; color: #c62828; border: 1px solid #ffc1bc; }
 .nav-strategy-bottom_base { background: #f3e8d8; color: #8d4e00; border: 1px solid #e8c89a; }
 .nav-strategy-board_relaunch { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+.nav-strategy-wyckoff { background: #efe8ff; color: #5e35b1; border: 1px solid #d1c4e9; }
 .nav-warn-far-low {
   display: inline-flex;
   align-items: center;
@@ -681,6 +687,33 @@ main {
   border-color: #0b57d0;
   color: #0b57d0;
 }
+.tab-btn-exp {
+  border-style: dashed;
+  color: #5e35b1;
+}
+.tab-btn-exp:hover { border-color: #7e57c2; color: #4527a0; }
+.tab-btn-exp.active {
+  background: #efe8ff;
+  border-color: #5e35b1;
+  color: #4527a0;
+}
+.tab-exp {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+  background: #efe8ff;
+  color: #5e35b1;
+  border: 1px solid #d1c4e9;
+  vertical-align: 1px;
+}
+.tab-btn-exp.active .tab-exp {
+  background: #fff;
+  border-color: #b39ddb;
+}
 .tab-pane[hidden] {
   display: none !important;
 }
@@ -749,6 +782,7 @@ def build_html(
       <button type="button" class="tab-btn" data-tab="board">📦 涨停箱体回踩 <span id="n-board">0</span></button>
       <button type="button" class="tab-btn" data-tab="base">📦 底部启动 <span id="n-base">0</span></button>
       <button type="button" class="tab-btn" data-tab="relaunch">🔄 板后重启 <span id="n-relaunch">0</span></button>
+      <button type="button" class="tab-btn tab-btn-exp" data-tab="wyckoff">🧪 威科夫 <span class="tab-exp">实验</span> <span id="n-wyckoff">0</span></button>
     </div>"""
         sub = (
             f'<span id="tab-label">📈 中长线</span> · 共 <span id="count">0</span> 只'
