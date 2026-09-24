@@ -1857,7 +1857,7 @@ def main() -> None:
 
     clear_feature_cache()
     asof = args.date.strip() or resolve_asof()
-    _, _, _, _, hot_stat, _, _, _ = run_day(asof, preload=True)
+    _, _, _, _, hot_stat, _, _, _, _ = run_day(asof, preload=True)
     log(f"完成，耗时 {time.time() - t0:.0f}s")
     if mode == "official" and (
         do_long
