@@ -297,9 +297,9 @@ def load_open_quotes(codes: list[str]) -> tuple[str, dict[str, float], bool]:
     """拉取持仓最新价并落盘；失败时退回上次行情缓存。"""
     codes = [str(c).zfill(6) for c in codes]
     try:
-        from update_daily import fetch_em_spot, to_num
+        from update_daily import fetch_market_spot, to_num
 
-        spot = fetch_em_spot()
+        spot = fetch_market_spot()
         wanted = spot[spot["代码"].isin(codes)]
         quotes = {
             str(r["代码"]).zfill(6): float(price)
@@ -309,7 +309,7 @@ def load_open_quotes(codes: list[str]) -> tuple[str, dict[str, float], bool]:
         fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
         payload = {
             "fetched_at": fetched_at,
-            "source": "eastmoney_spot",
+            "source": "market_spot",
             "quotes": quotes,
         }
         LATEST_QUOTES.parent.mkdir(parents=True, exist_ok=True)
