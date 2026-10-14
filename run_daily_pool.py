@@ -1377,9 +1377,32 @@ def run_one_day(
         if send_mail:
             import pool_mail
 
+            forward_report = ROOT / "forward_returns" / "index.html"
+            try:
+                log("[收盘] 生成 make forward 报告…")
+                subprocess.run(
+                    [
+                        PYTHON,
+                        str(ROOT / "pool_forward_returns.py"),
+                        "--asof",
+                        asof,
+                    ],
+                    cwd=str(ROOT),
+                    check=True,
+                )
+                if not forward_report.is_file():
+                    log("  警告：forward 报告未生成，不附加报告")
+                    forward_report = None
+            except subprocess.CalledProcessError as exc:
+                log(f"  警告：forward 报告生成失败，不附加报告：{exc}")
+                forward_report = None
             watch_stocks = load_watch_book_stocks(asof, live, refresh=True)
             log(f"[收盘] 发送观察簿邮件（{len(watch_stocks)} 只）…")
-            pool_mail.send_watch_mail(asof, watch_stocks)
+            pool_mail.send_watch_mail(
+                asof,
+                watch_stocks,
+                forward_report=forward_report,
+            )
         if (live / "index.html").exists():
             log(f"  交易 HTML：{live / 'index.html'}")
         return empty

@@ -17,6 +17,7 @@ import os
 import smtplib
 import ssl
 from datetime import datetime
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -473,14 +474,21 @@ def send_html_mail(
     subject: str,
     html_body: str,
     cfg: dict | None = None,
+    attachments: list[tuple[Path, str]] | None = None,
 ) -> None:
     cfg = cfg or mail_config()
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = cfg["user"]
     msg["To"] = cfg["to"]
-    msg.attach(MIMEText("请使用支持 HTML 的客户端查看信号池摘要。", "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    body = MIMEMultipart("alternative")
+    body.attach(MIMEText("请使用支持 HTML 的客户端查看信号池摘要。", "plain", "utf-8"))
+    body.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(body)
+    for path, filename in attachments or []:
+        part = MIMEApplication(path.read_bytes(), _subtype="html")
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
 
     context = ssl.create_default_context()
     port = int(cfg["port"])
@@ -518,7 +526,12 @@ WATCH_MAIL_SECTIONS: list[tuple[str, str, str]] = [
 ]
 
 
-def send_watch_mail(asof: str, watch_stocks: list[dict]) -> None:
+def send_watch_mail(
+    asof: str,
+    watch_stocks: list[dict],
+    *,
+    forward_report: Path | None = None,
+) -> None:
     """收盘：仅观察簿名单，无目录。"""
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     body = render_mail_html(
@@ -529,4 +542,13 @@ def send_watch_mail(asof: str, watch_stocks: list[dict]) -> None:
         page_title=f"观察簿 · {asof}",
         subtitle=f"收盘观察池 · 共 {len(watch_stocks or [])} 条 · 生成于 {generated}",
     )
-    send_html_mail(subject=f"观察簿 {asof}", html_body=body)
+    attachments = []
+    if forward_report is not None:
+        attachments.append(
+            (forward_report, f"forward_returns_{asof}.html")
+        )
+    send_html_mail(
+        subject=f"观察簿 {asof}",
+        html_body=body,
+        attachments=attachments,
+    )
