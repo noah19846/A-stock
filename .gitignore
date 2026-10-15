@@ -105,6 +105,9 @@ data/three_yang_launch_stats_15.json
 !data/images/**
 
 
+# 单股缠论图（chan_chart.py 生成的 HTML / JSON）
+chan_charts/
+
 # Misc local junk
 *.log
 *.tmp
