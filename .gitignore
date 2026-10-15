@@ -52,6 +52,7 @@ forward_returns/
 trades/
 
 # Regenerable board / stock reference dumps + backtest dumps
+/a_stock_list.csv
 data/*.csv
 data/*.txt
 
