@@ -516,8 +516,22 @@ def send_pool_mail(
     asof: str,
     panels: dict[str, list[dict]],
 ) -> None:
-    """正式日更：多 tab 摘要（含目录）。"""
+    """正式日更（14:30 信号邮件）：多 tab 摘要，并附上涨趋势。"""
     body = render_mail_html(asof, panels)
+    try:
+        import uptrend_screen
+
+        section = uptrend_screen.mail_section()
+        log(
+            "  附上涨趋势 "
+            f"{section.count('<article ')} 只"
+        )
+    except Exception as exc:
+        log(f"  上涨趋势未附上：{exc}")
+        section = (
+            '<p style="color:#8a4b08">上涨趋势这次没有生成，信号池摘要仍在上面。</p>'
+        )
+    body = body.replace("<p class=\"foot\">", section + "<p class=\"foot\">", 1)
     send_html_mail(subject=f"信号池 {asof}", html_body=body)
 
 

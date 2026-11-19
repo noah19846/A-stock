@@ -1,0 +1,439 @@
+"""
+从 daily.db 里筛上涨趋势，写出可筛选的 HTML。
+
+只使用库里有日线的股票。去掉名称含 ST 的、创业板（300/301）、科创板（688/689）。
+名称链到雪球，最后一列是近 60 个交易日收盘的走势。
+
+上涨：60 日均线高于 20 个交易日前；20 日均线仍在 60 日均线之上；
+收盘在 60 日均线之上；近 60 个交易日涨幅为正。
+收盘仍在 20 日线上为延续，落到 20 日线下为回调。
+
+用法：
+  .venv/bin/python uptrend_screen.py
+  .venv/bin/python uptrend_screen.py --html uptrend.html
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent
+
+
+def xueqiu_url(code: str) -> str:
+    code = str(code).zfill(6)
+    if code.startswith(("5", "6", "9")):
+        prefix = "SH"
+    elif code.startswith(("4", "8")) or code.startswith("92"):
+        prefix = "BJ"
+    else:
+        prefix = "SZ"
+    return f"https://xueqiu.com/S/{prefix}{code}"
+
+
+def board_of(code: str) -> str:
+    if code.startswith(("688", "689")):
+        return "科创板"
+    if code.startswith(("300", "301")):
+        return "创业板"
+    if code.startswith(("8", "4", "92")):
+        return "北交所"
+    if code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+        return "主板"
+    return "其他"
+
+
+def load_maps(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    names: dict[str, str] = {}
+    industries: dict[str, str] = {}
+    list_path = root / "data" / "stock_list.csv"
+    ind_path = root / "data" / "stock_industry.csv"
+    if list_path.exists():
+        df = pd.read_csv(list_path, dtype=str)
+        code_col = "股票代码" if "股票代码" in df.columns else df.columns[0]
+        name_col = "股票名称" if "股票名称" in df.columns else df.columns[1]
+        df[code_col] = df[code_col].astype(str).str.zfill(6)
+        for code, name in zip(df[code_col], df[name_col].fillna("").astype(str)):
+            name = name.strip()
+            if name and name.lower() != "nan":
+                names[code] = name
+    if ind_path.exists():
+        df = pd.read_csv(ind_path, dtype=str)
+        code_col = "股票代码" if "股票代码" in df.columns else df.columns[0]
+        df[code_col] = df[code_col].astype(str).str.zfill(6)
+        if "行业板块" in df.columns:
+            industries = dict(zip(df[code_col], df["行业板块"].fillna("").astype(str)))
+        if "股票名称" in df.columns:
+            for code, name in zip(df[code_col], df["股票名称"].fillna("").astype(str)):
+                name = name.strip()
+                if name and name.lower() != "nan" and code not in names:
+                    names[code] = name
+    return names, industries
+
+
+def screen(root: Path) -> tuple[dict, list[dict]]:
+    sys.path.insert(0, str(root))
+    import daily_db
+
+    db_path = root / "data" / "db" / "daily.db"
+    cutoff = daily_db.recent_cutoff_date(limit=160, db_path=db_path)
+    if not cutoff:
+        raise SystemExit(f"没有读到日线：{db_path}")
+    raw = daily_db.load_recent_bars_since(cutoff, db_path=db_path)
+    if raw.empty:
+        raise SystemExit(f"{cutoff} 之后没有日线")
+    raw["code"] = raw["code"].astype(str).str.zfill(6)
+    raw["trade_date"] = raw["trade_date"].astype(str).str.slice(0, 10)
+    asof = str(raw["trade_date"].max())
+    names, industries = load_maps(root)
+
+    in_db = int(raw["code"].nunique())
+    dropped_board = 0
+    dropped_st = 0
+    dropped_short = 0
+    rows: list[dict] = []
+
+    for code, g in raw.groupby("code", sort=False):
+        board = board_of(code)
+        if board in ("科创板", "创业板"):
+            dropped_board += 1
+            continue
+        name = names.get(code, "")
+        if "ST" in name.upper():
+            dropped_st += 1
+            continue
+        g = g.sort_values("trade_date")
+        if str(g["trade_date"].iloc[-1]) != asof or len(g) < 120:
+            dropped_short += 1
+            continue
+        factor = pd.to_numeric(g["hfq_factor"], errors="coerce")
+        last_f = float(factor.iloc[-1])
+        if not (last_f > 0) or factor.isna().any():
+            dropped_short += 1
+            continue
+        scale = factor.to_numpy() / last_f
+        px = pd.to_numeric(g["close"], errors="coerce").to_numpy() * scale
+        hi = pd.to_numeric(g["high"], errors="coerce").to_numpy() * scale
+        amt = pd.to_numeric(g["amount"], errors="coerce").to_numpy()
+        if not (pd.notna(px).all() and pd.notna(hi).all()) or min(px) <= 0:
+            dropped_short += 1
+            continue
+        close = float(px[-1])
+        ma20 = float(px[-20:].mean())
+        ma60 = float(px[-60:].mean())
+        ma60_prev = float(px[-80:-20].mean())
+        ret60 = close / float(px[-61]) - 1.0
+        ret20 = close / float(px[-21]) - 1.0
+        if not (ma60 > ma60_prev and ma20 > ma60 and close > ma60 and ret60 > 0):
+            continue
+        spark = [round(float(v), 4) for v in px[-60:]]
+        amt20 = float(pd.Series(amt[-20:]).mean())
+        rows.append(
+            {
+                "code": code,
+                "name": name or code,
+                "board": board,
+                "state": "回调" if close < ma20 else "延续",
+                "close": round(close, 2),
+                "ret60": round(ret60 * 100, 1),
+                "ret20": round(ret20 * 100, 1),
+                "dd60": round((close / float(hi[-60:].max()) - 1.0) * 100, 1),
+                "above60": round((close / ma60 - 1.0) * 100, 1),
+                "amt": round(amt20 / 1e8, 2) if pd.notna(amt20) else 0.0,
+                "industry": industries.get(code, "") or "未分类",
+                "xq": xueqiu_url(code),
+                "spark": spark,
+            }
+        )
+
+    rows.sort(key=lambda r: -r["ret60"])
+    meta = {
+        "asof": asof,
+        "in_db": in_db,
+        "dropped_board": dropped_board,
+        "dropped_st": dropped_st,
+        "n": len(rows),
+        "cont": sum(1 for r in rows if r["state"] == "延续"),
+        "pull": sum(1 for r in rows if r["state"] == "回调"),
+        "boards": sorted({r["board"] for r in rows}),
+    }
+    _ = dropped_short
+    return meta, rows
+
+
+def spark_svg(values: list[float], *, up: bool) -> str:
+    """近 60 日收盘折线。邮件客户端不跑脚本，所以直接嵌 SVG。"""
+    w, h = 96, 28
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    n = len(values)
+    pts: list[str] = []
+    for i, v in enumerate(values):
+        x = 2.0 if n == 1 else 2.0 + i / (n - 1) * (w - 4)
+        y = (h - 2) - (float(v) - lo) / span * (h - 6)
+        pts.append(f"{x:.1f},{y:.1f}")
+    color = "#1f4d3a" if up else "#8a5a12"
+    return (
+        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="近60日收盘">'
+        f'<polyline fill="none" stroke="{color}" stroke-width="1.5" '
+        f'points="{" ".join(pts)}"/></svg>'
+    )
+
+
+def mail_section(root: Path | None = None) -> str:
+    """给信号池邮件用的静态片段：名称链雪球，右侧是 60 日走势。"""
+    import html as html_mod
+
+    meta, rows = screen(root or ROOT)
+    cards: list[str] = []
+    for r in rows:
+        up = r["state"] == "延续"
+        tone = "#1f4d3a" if up else "#8a5a12"
+        cards.append(
+            "<article style=\"display:flex;gap:10px;align-items:center;"
+            "justify-content:space-between;background:#fff;border-radius:10px;"
+            "padding:8px 10px;margin:0 0 6px\">"
+            "<div style=\"min-width:0\">"
+            f'<a href="{html_mod.escape(r["xq"])}" style="color:{tone};'
+            'text-decoration:none;font-weight:600">'
+            f'{html_mod.escape(r["code"])} {html_mod.escape(r["name"])}</a>'
+            '<div style="color:#5c6570;font-size:12px;margin-top:2px">'
+            f'{html_mod.escape(r["state"])} · 60日 {r["ret60"]:+.1f}%'
+            f' · 20日 {r["ret20"]:+.1f}%'
+            f' · {html_mod.escape(r["industry"])}</div>'
+            "</div>"
+            f"{spark_svg(r['spark'], up=up)}"
+            "</article>"
+        )
+    body = "".join(cards) or '<p style="color:#5c6570">暂无</p>'
+    return (
+        '<section style="margin:18px 0 8px">'
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+        '<h2 style="margin:0;font-size:18px">上涨趋势</h2>'
+        f'<span style="color:#5c6570">{meta["n"]}</span></div>'
+        '<p style="color:#5c6570;font-size:12px;margin:6px 0 10px">'
+        f'库内截至 {html_mod.escape(meta["asof"])} · '
+        f'延续 {meta["cont"]} · 回调 {meta["pull"]} · '
+        "已去掉 ST、创业板、科创板。绿线为延续，褐线为回调。"
+        "</p>"
+        f"{body}</section>"
+    )
+
+
+def render_html(meta: dict, rows: list[dict]) -> str:
+    data = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    asof = meta["asof"]
+    boards = "".join(
+        f'<button type="button" data-board="{b}">{b}</button>' for b in meta["boards"]
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{asof} 上涨趋势</title>
+<style>
+  :root {{
+    --bg: #f6f5f2; --paper: #fff; --ink: #1c1b19; --muted: #6b6760;
+    --line: #e4e0d8; --up: #1f4d3a; --pull: #8a5a12; --chip: #efece6;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 "Iowan Old Style", Palatino, "Songti SC", serif;
+  }}
+  main {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 64px; }}
+  h1 {{ font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }}
+  .lead {{ color: var(--muted); margin: 0 0 18px; max-width: 760px; }}
+  .stats {{ display: flex; gap: 28px; margin: 0 0 18px; }}
+  .stats b {{ display: block; font-size: 26px; font-variant-numeric: tabular-nums; }}
+  .stats span {{ color: var(--muted); font-size: 12px; }}
+  .note {{ background: var(--paper); border: 1px solid var(--line); padding: 12px 14px; margin-bottom: 18px; }}
+  .note strong {{ display: block; margin-bottom: 4px; }}
+  .controls {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }}
+  input[type="search"] {{
+    font: inherit; padding: 6px 10px; border: 1px solid var(--line);
+    background: var(--paper); min-width: 220px;
+  }}
+  button {{
+    font: inherit; border: 1px solid var(--line); background: var(--paper);
+    padding: 5px 10px; cursor: pointer; color: var(--ink);
+  }}
+  button.on {{ background: var(--ink); color: #fff; border-color: var(--ink); }}
+  .meta {{ color: var(--muted); font-size: 12px; margin: 8px 0 14px; }}
+  .wrap {{ overflow: auto; border: 1px solid var(--line); background: var(--paper); }}
+  table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
+  th, td {{ padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }}
+  th {{ position: sticky; top: 0; background: #fbfaf7; font-size: 12px; cursor: pointer; }}
+  td.num, th.num {{ text-align: right; }}
+  a {{ color: var(--up); text-decoration: none; border-bottom: 1px solid rgba(31,77,58,.35); }}
+  tr.pull a {{ color: var(--pull); border-bottom-color: rgba(138,90,18,.4); }}
+  .tag {{ display: inline-block; padding: 0 6px; border-radius: 99px; background: var(--chip); font-size: 12px; }}
+  svg.spark {{ display: block; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{asof} 仍处上涨趋势的股票</h1>
+  <p class="lead">只看数据库里的日线。已去掉 ST、创业板和科创板。名称打开雪球该股页面。最后一列是近 60 个交易日的收盘走势。</p>
+  <div class="stats" id="stats"></div>
+  <div class="note">
+    <strong>上涨怎么定的</strong>
+    四条同时成立：60 日均线高于 20 个交易日前的 60 日均线；20 日均线仍在 60 日均线之上；收盘价在 60 日均线之上；近 60 个交易日涨幅为正。收盘仍在 20 日线上记为延续，落到 20 日线下记为回调。价格用后复权因子换成前复权。
+  </div>
+  <div class="controls">
+    <input id="q" type="search" placeholder="搜代码、名称或行业" />
+    <span id="state">
+      <button type="button" data-state="全部">全部</button>
+      <button type="button" data-state="延续">延续</button>
+      <button type="button" data-state="回调">回调</button>
+    </span>
+    <span id="board">
+      <button type="button" data-board="全部">全部板块</button>
+      {boards}
+    </span>
+    <span id="liq">
+      <button type="button" data-liq="全部">不看成交额</button>
+      <button type="button" data-liq="1">20日均额≥1亿</button>
+    </span>
+  </div>
+  <p class="meta" id="count"></p>
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-k="code">代码</th>
+          <th data-k="name">名称</th>
+          <th data-k="board">板块</th>
+          <th data-k="state">状态</th>
+          <th class="num" data-k="close">收盘</th>
+          <th class="num" data-k="ret60">60日涨幅</th>
+          <th class="num" data-k="ret20">20日涨幅</th>
+          <th class="num" data-k="dd60">距60日高点</th>
+          <th class="num" data-k="above60">高于60日线</th>
+          <th class="num" data-k="amt">20日均额(亿)</th>
+          <th data-k="industry">行业</th>
+          <th data-k="spark">近60日</th>
+        </tr>
+      </thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
+  <p class="meta">库内 {meta["in_db"]} 只；去掉创业板和科创板 {meta["dropped_board"]} 只、ST {meta["dropped_st"]} 只。入选 {meta["n"]} 只，延续 {meta["cont"]}，回调 {meta["pull"]}。走势按前复权收盘连线，绿线是延续，褐线是回调。</p>
+</main>
+<script>
+const ROWS = {data};
+const state = {{ q: "", state: "全部", board: "全部", liq: "全部", sort: "ret60", dir: -1 }};
+
+function pct(n) {{
+  return (n > 0 ? "+" : "") + n.toFixed(1) + "%";
+}}
+function esc(s) {{
+  return String(s).replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
+}}
+function spark(values, up) {{
+  const w = 108, h = 32;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = hi - lo || 1;
+  const pts = values.map((v, i) => {{
+    const x = values.length === 1 ? w / 2 : (i / (values.length - 1)) * (w - 4) + 2;
+    const y = h - 2 - ((v - lo) / span) * (h - 6);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }}).join(" ");
+  const color = up ? "#1f4d3a" : "#8a5a12";
+  return `<svg class="spark" width="${{w}}" height="${{h}}" viewBox="0 0 ${{w}} ${{h}}" aria-label="近60日收盘"><polyline fill="none" stroke="${{color}}" stroke-width="1.5" points="${{pts}}"/></svg>`;
+}}
+function mark(sel, attr, cur) {{
+  document.querySelectorAll(sel).forEach((b) => {{
+    b.className = b.getAttribute(attr) === cur ? "on" : "";
+  }});
+}}
+function filtered() {{
+  const q = state.q.trim();
+  const rows = ROWS.filter((r) => {{
+    if (state.state !== "全部" && r.state !== state.state) return false;
+    if (state.board !== "全部" && r.board !== state.board) return false;
+    if (state.liq === "1" && r.amt < 1) return false;
+    if (q && !(r.code + " " + r.name + " " + r.industry).includes(q)) return false;
+    return true;
+  }});
+  const k = state.sort, dir = state.dir;
+  rows.sort((a, b) => {{
+    if (k === "spark") return 0;
+    const av = a[k], bv = b[k];
+    if (typeof av === "number") return (av - bv) * dir;
+    return String(av).localeCompare(String(bv), "zh") * dir;
+  }});
+  return rows;
+}}
+function render() {{
+  mark("#state button", "data-state", state.state);
+  mark("#board button", "data-board", state.board);
+  mark("#liq button", "data-liq", state.liq);
+  const rows = filtered();
+  const cont = rows.filter((r) => r.state === "延续").length;
+  document.getElementById("stats").innerHTML =
+    `<div><b>${{rows.length}}</b><span>当前列表</span></div>` +
+    `<div><b>${{cont}}</b><span>延续，收盘仍在 20 日线上</span></div>` +
+    `<div><b>${{rows.length - cont}}</b><span>回调，收盘已在 20 日线下</span></div>`;
+  document.getElementById("count").textContent =
+    `显示 ${{rows.length}} / ${{ROWS.length}}。点表头排序。库内截至 {asof}。`;
+  const body = document.getElementById("body");
+  body.innerHTML = rows.map((r) => `<tr class="${{r.state === "回调" ? "pull" : "cont"}}">
+    <td>${{esc(r.code)}}</td>
+    <td><a href="${{esc(r.xq)}}" target="_blank" rel="noopener">${{esc(r.name)}}</a></td>
+    <td>${{esc(r.board)}}</td>
+    <td><span class="tag">${{esc(r.state)}}</span></td>
+    <td class="num">${{r.close.toFixed(2)}}</td>
+    <td class="num">${{pct(r.ret60)}}</td>
+    <td class="num">${{pct(r.ret20)}}</td>
+    <td class="num">${{pct(r.dd60)}}</td>
+    <td class="num">${{pct(r.above60)}}</td>
+    <td class="num">${{r.amt.toFixed(2)}}</td>
+    <td>${{esc(r.industry)}}</td>
+    <td>${{spark(r.spark, r.state === "延续")}}</td>
+  </tr>`).join("") || `<tr><td colspan="12">这个筛选下没有股票</td></tr>`;
+}}
+document.getElementById("q").addEventListener("input", (e) => {{ state.q = e.target.value; render(); }});
+document.querySelectorAll("[data-state]").forEach((b) => b.addEventListener("click", () => {{ state.state = b.dataset.state; render(); }}));
+document.querySelectorAll("[data-board]").forEach((b) => b.addEventListener("click", () => {{ state.board = b.dataset.board; render(); }}));
+document.querySelectorAll("[data-liq]").forEach((b) => b.addEventListener("click", () => {{ state.liq = b.dataset.liq; render(); }}));
+document.querySelectorAll("th").forEach((th) => th.addEventListener("click", () => {{
+  const k = th.dataset.k;
+  if (k === "spark") return;
+  if (state.sort === k) state.dir *= -1;
+  else {{ state.sort = k; state.dir = typeof ROWS[0][k] === "number" ? -1 : 1; }}
+  render();
+}}));
+render();
+</script>
+</body>
+</html>
+"""
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="数据库内上涨趋势 HTML")
+    parser.add_argument("--root", default=str(ROOT), help="仓库根目录，里面有 data/db/daily.db")
+    parser.add_argument("--html", default="", help="输出 HTML 路径")
+    args = parser.parse_args()
+    root = Path(args.root).resolve()
+    meta, rows = screen(root)
+    out = Path(args.html) if args.html else root / f"uptrend_{meta['asof']}.html"
+    out.write_text(render_html(meta, rows), encoding="utf-8")
+    print(
+        f"{meta['asof']}  库内 {meta['in_db']}  入选 {meta['n']}"
+        f"  延续 {meta['cont']}  回调 {meta['pull']}"
+        f"  去掉板块 {meta['dropped_board']}  ST {meta['dropped_st']}"
+    )
+    print(out)
+
+
+if __name__ == "__main__":
+    main()
