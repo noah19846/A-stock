@@ -1,8 +1,8 @@
 """
-从 daily.db 里筛上涨趋势，写出可筛选的 HTML。
+从 daily.db 里筛上涨趋势，写出可筛选的 HTML，并按行业大类发邮件。
 
 只使用库里有日线的股票。去掉名称含 ST 的、创业板（300/301）、科创板（688/689）。
-名称链到雪球，最后一列是近 60 个交易日收盘的走势。
+名称链到雪球。名单按申万三级行业收成大类，一类里延续在前，再按 60 日涨幅。
 
 上涨：60 日均线高于 20 个交易日前；20 日均线仍在 60 日均线之上；
 收盘在 60 日均线之上；近 60 个交易日涨幅为正。
@@ -34,6 +34,41 @@ def xueqiu_url(code: str) -> str:
     else:
         prefix = "SZ"
     return f"https://xueqiu.com/S/{prefix}{code}"
+
+
+# 先匹配更具体的行业名。申万三级大约三百个，邮件里按这些大类分段。
+_GROUP_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("银行", ("银行", "商行")),
+    ("非银金融", ("证券", "保险", "信托", "期货", "金融", "租赁", "资产")),
+    ("交通运输", ("高速", "港口", "航运", "航空运输", "铁路运输", "机场", "快递", "物流", "公交", "货运", "供应链", "仓储")),
+    ("汽车", ("汽车", "乘用车", "载客", "载货", "摩托车", "轮胎", "车身", "底盘")),
+    ("家电", ("家电", "冰洗", "空调", "厨房电器", "厨房小家电", "清洁小家电", "照明", "彩电", "黑色家电", "卫浴电器")),
+    ("建筑地产", ("地产", "住宅", "物业", "房屋建设", "园林", "基建", "国际工程", "装修装饰", "钢结构", "工程咨询", "专业工程")),
+    ("建材", ("水泥", "板材", "管材", "瓷砖", "防水", "玻璃", "玻纤", "耐火", "建材", "卫浴制品")),
+    ("煤炭油气", ("煤", "焦炭", "油气", "油田", "炼油", "石化")),
+    ("公用事业", ("发电", "热力", "电能", "燃气", "水务", "环境治理", "固废", "大气治理", "环保")),
+    ("电力设备", ("光伏", "风电", "锂电", "电池", "逆变器", "电网", "输变电", "配电", "电机", "电源", "线缆", "硅料", "火电", "电力设备")),
+    ("化工", ("化工", "化学", "树脂", "塑料", "橡胶", "氟", "氯碱", "纯碱", "氨纶", "涤纶", "锦纶", "粘胶", "聚氨酯", "钛白", "炭黑", "膜材料", "无机盐", "有机硅", "胶黏", "民爆", "氮肥", "磷肥", "钾肥", "复合肥", "涂料")),
+    ("有色钢铁", ("钢", "铁", "铜", "铝", "锂", "镍", "钴", "钼", "钨", "铅锌", "黄金", "白银", "稀土", "金属", "冶钢", "长材")),
+    ("纺织服饰", ("家居", "家纺", "服装", "纺织", "鞋", "棉纺", "印染", "饰品", "钟表珠宝", "辅料")),
+    ("食品饮料", ("食品", "酒", "乳品", "饮料", "调味", "零食", "烘焙", "预加工", "熟食", "粮", "果蔬", "肉制品")),
+    ("农林牧渔", ("养殖", "饲料", "种植", "农产品", "食用菌", "林业", "种子", "宠物", "水产", "海洋", "农业", "动物保健", "农药", "农用")),
+    ("医药", ("药", "医", "疫苗", "血液", "诊断", "生物制品", "保健品")),
+    ("商贸服务", ("百货", "超市", "零售", "酒店", "旅游", "景区", "餐饮", "贸易", "专业连锁", "检测服务", "人力资源", "会展", "化妆品", "洗护", "娱乐用品", "体育")),
+    ("传媒教育", ("出版", "影视", "游戏", "媒体", "广告", "教育", "院线", "培训", "门户", "电视广播", "文化用品", "营销")),
+    ("机械军工", ("机械", "机床", "机器人", "轨交", "航天", "航空装备", "航海", "军工", "兵装", "自动化", "工控", "激光", "磨具", "仪器仪表", "重型设备", "楼宇设备", "印刷包装", "专用设备", "通用设备", "运输设备")),
+    ("电子", ("芯片", "半导体", "面板", "光学", "LED", "元件", "电路板", "电子", "集成电路", "安防", "磁性", "分立器件")),
+    ("通信计算机", ("通信", "软件", "IT服务", "计算机", "电商", "电信")),
+    ("造纸包装", ("纸", "包装", "印刷")),
+)
+
+
+def industry_group(name: str) -> str:
+    text = (name or "").replace("Ⅲ", "")
+    for group, keys in _GROUP_RULES:
+        if any(key in text for key in keys):
+            return group
+    return "其他"
 
 
 def board_of(code: str) -> str:
@@ -131,13 +166,14 @@ def screen(root: Path) -> tuple[dict, list[dict]]:
         ret20 = close / float(px[-21]) - 1.0
         if not (ma60 > ma60_prev and ma20 > ma60 and close > ma60 and ret60 > 0):
             continue
-        spark = [round(float(v), 4) for v in px[-60:]]
         amt20 = float(pd.Series(amt[-20:]).mean())
+        industry = industries.get(code, "") or "未分类"
         rows.append(
             {
                 "code": code,
                 "name": name or code,
                 "board": board,
+                "group": industry_group(industry),
                 "state": "回调" if close < ma20 else "延续",
                 "close": round(close, 2),
                 "ret60": round(ret60 * 100, 1),
@@ -145,13 +181,16 @@ def screen(root: Path) -> tuple[dict, list[dict]]:
                 "dd60": round((close / float(hi[-60:].max()) - 1.0) * 100, 1),
                 "above60": round((close / ma60 - 1.0) * 100, 1),
                 "amt": round(amt20 / 1e8, 2) if pd.notna(amt20) else 0.0,
-                "industry": industries.get(code, "") or "未分类",
+                "industry": industry,
                 "xq": xueqiu_url(code),
-                "spark": spark,
             }
         )
 
-    rows.sort(key=lambda r: -r["ret60"])
+    rows.sort(key=lambda r: (r["state"] != "延续", -r["ret60"]))
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["group"]] = counts.get(row["group"], 0) + 1
+    groups = sorted(counts, key=lambda name: (name == "其他", -counts[name], name))
     meta = {
         "asof": asof,
         "in_db": in_db,
@@ -161,59 +200,53 @@ def screen(root: Path) -> tuple[dict, list[dict]]:
         "cont": sum(1 for r in rows if r["state"] == "延续"),
         "pull": sum(1 for r in rows if r["state"] == "回调"),
         "boards": sorted({r["board"] for r in rows}),
+        "groups": groups,
     }
     _ = dropped_short
     return meta, rows
 
 
-def spark_svg(values: list[float], *, up: bool) -> str:
-    """近 60 日收盘折线。邮件客户端不跑脚本，所以直接嵌 SVG。"""
-    w, h = 96, 28
-    lo, hi = min(values), max(values)
-    span = (hi - lo) or 1.0
-    n = len(values)
-    pts: list[str] = []
-    for i, v in enumerate(values):
-        x = 2.0 if n == 1 else 2.0 + i / (n - 1) * (w - 4)
-        y = (h - 2) - (float(v) - lo) / span * (h - 6)
-        pts.append(f"{x:.1f},{y:.1f}")
-    color = "#1f4d3a" if up else "#8a5a12"
-    return (
-        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
-        f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="近60日收盘">'
-        f'<polyline fill="none" stroke="{color}" stroke-width="1.5" '
-        f'points="{" ".join(pts)}"/></svg>'
-    )
-
-
-def _mail_cards(rows: list[dict]) -> str:
+def _mail_groups(rows: list[dict]) -> str:
     import html as html_mod
 
-    cards: list[str] = []
-    for r in rows:
-        up = r["state"] == "延续"
-        tone = "#1f4d3a" if up else "#8a5a12"
-        cards.append(
-            "<article style=\"display:flex;gap:10px;align-items:center;"
-            "justify-content:space-between;background:#fff;border-radius:10px;"
-            "padding:8px 10px;margin:0 0 6px\">"
-            "<div style=\"min-width:0\">"
-            f'<a href="{html_mod.escape(r["xq"])}" style="color:{tone};'
-            'text-decoration:none;font-weight:600">'
-            f'{html_mod.escape(r["code"])} {html_mod.escape(r["name"])}</a>'
-            '<div style="color:#5c6570;font-size:12px;margin-top:2px">'
-            f'{html_mod.escape(r["state"])} · 60日 {r["ret60"]:+.1f}%'
-            f' · 20日 {r["ret20"]:+.1f}%'
-            f' · {html_mod.escape(r["industry"])}</div>'
-            "</div>"
-            f"{spark_svg(r['spark'], up=up)}"
-            "</article>"
+    buckets: dict[str, list[dict]] = {}
+    for row in rows:
+        buckets.setdefault(row["group"], []).append(row)
+    names = sorted(buckets, key=lambda name: (name == "其他", -len(buckets[name]), name))
+    if not names:
+        return '<p style="color:#5c6570">暂无</p>'
+
+    parts: list[str] = []
+    for name in names:
+        items = buckets[name]
+        cont = sum(1 for row in items if row["state"] == "延续")
+        lines: list[str] = []
+        for row in items:
+            tone = "#1f4d3a" if row["state"] == "延续" else "#8a5a12"
+            industry = html_mod.escape(row["industry"].replace("Ⅲ", ""))
+            lines.append(
+                '<div style="padding:7px 0;border-top:1px solid #ece7df">'
+                f'<a href="{html_mod.escape(row["xq"])}" style="color:#1a1d21;'
+                'font-weight:600;text-decoration:none">'
+                f'{html_mod.escape(row["code"])} {html_mod.escape(row["name"])}</a>'
+                f'<span style="color:{tone};font-size:12px"> {html_mod.escape(row["state"])}</span>'
+                '<div style="color:#5c6570;font-size:12px;margin-top:2px">'
+                f"{industry} · 60日 {row['ret60']:+.1f}% · 20日 {row['ret20']:+.1f}%"
+                "</div></div>"
+            )
+        parts.append(
+            '<section style="background:#fff;border-radius:12px;padding:12px 14px;margin:0 0 12px">'
+            f'<h2 style="margin:0;font-size:17px">{html_mod.escape(name)}'
+            f'<span style="color:#5c6570;font-weight:500;font-size:13px"> · {len(items)} 只</span></h2>'
+            f'<p style="margin:2px 0 0;color:#5c6570;font-size:12px">延续 {cont} · 回调 {len(items) - cont}</p>'
+            f'{"".join(lines)}'
+            "</section>"
         )
-    return "".join(cards) or '<p style="color:#5c6570">暂无</p>'
+    return "".join(parts)
 
 
 def mail_html(meta: dict, rows: list[dict]) -> str:
-    """单独一封上涨趋势邮件。不嵌进信号池正文，避免被摘要挤到最底下。"""
+    """单独一封上涨趋势邮件。按行业大类分段，不画走势。"""
     import html as html_mod
 
     asof = html_mod.escape(str(meta["asof"]))
@@ -227,10 +260,10 @@ def mail_html(meta: dict, rows: list[dict]) -> str:
 <body style="margin:0;padding:12px;background:#f0f2f5;color:#1a1d21;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:15px;line-height:1.45">
   <h1 style="margin:0 0 6px;font-size:22px">上涨趋势 · {asof}</h1>
   <p style="margin:0 0 12px;color:#5c6570;font-size:13px">
-    库内股票 · 延续 {meta["cont"]} · 回调 {meta["pull"]} · 共 {meta["n"]} 只。
-    已去掉 ST、创业板、科创板。名称打开雪球。右侧是近 60 个交易日收盘，绿线为延续，褐线为回调。
+    库内股票 · 延续 {meta["cont"]} · 回调 {meta["pull"]} · 共 {meta["n"]} 只，分成 {len(meta["groups"])} 类。
+    已去掉 ST、创业板、科创板。名称打开雪球。一类里先列延续，再按 60 日涨幅从高到低。
   </p>
-  {_mail_cards(rows)}
+  {_mail_groups(rows)}
 </body>
 </html>
 """
@@ -258,6 +291,9 @@ def render_html(meta: dict, rows: list[dict]) -> str:
     asof = meta["asof"]
     boards = "".join(
         f'<button type="button" data-board="{b}">{b}</button>' for b in meta["boards"]
+    )
+    groups = "".join(
+        f'<button type="button" data-group="{g}">{g}</button>' for g in meta["groups"]
     )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -302,13 +338,12 @@ def render_html(meta: dict, rows: list[dict]) -> str:
   a {{ color: var(--up); text-decoration: none; border-bottom: 1px solid rgba(31,77,58,.35); }}
   tr.pull a {{ color: var(--pull); border-bottom-color: rgba(138,90,18,.4); }}
   .tag {{ display: inline-block; padding: 0 6px; border-radius: 99px; background: var(--chip); font-size: 12px; }}
-  svg.spark {{ display: block; }}
 </style>
 </head>
 <body>
 <main>
   <h1>{asof} 仍处上涨趋势的股票</h1>
-  <p class="lead">只看数据库里的日线。已去掉 ST、创业板和科创板。名称打开雪球该股页面。最后一列是近 60 个交易日的收盘走势。</p>
+  <p class="lead">只看数据库里的日线。已去掉 ST、创业板和科创板。名称打开雪球该股页面。分类是把申万三级行业收成的大类。</p>
   <div class="stats" id="stats"></div>
   <div class="note">
     <strong>上涨怎么定的</strong>
@@ -325,6 +360,10 @@ def render_html(meta: dict, rows: list[dict]) -> str:
       <button type="button" data-board="全部">全部板块</button>
       {boards}
     </span>
+    <span id="group">
+      <button type="button" data-group="全部">全部行业</button>
+      {groups}
+    </span>
     <span id="liq">
       <button type="button" data-liq="全部">不看成交额</button>
       <button type="button" data-liq="1">20日均额≥1亿</button>
@@ -338,6 +377,7 @@ def render_html(meta: dict, rows: list[dict]) -> str:
           <th data-k="code">代码</th>
           <th data-k="name">名称</th>
           <th data-k="board">板块</th>
+          <th data-k="group">分类</th>
           <th data-k="state">状态</th>
           <th class="num" data-k="close">收盘</th>
           <th class="num" data-k="ret60">60日涨幅</th>
@@ -346,35 +386,22 @@ def render_html(meta: dict, rows: list[dict]) -> str:
           <th class="num" data-k="above60">高于60日线</th>
           <th class="num" data-k="amt">20日均额(亿)</th>
           <th data-k="industry">行业</th>
-          <th data-k="spark">近60日</th>
         </tr>
       </thead>
       <tbody id="body"></tbody>
     </table>
   </div>
-  <p class="meta">库内 {meta["in_db"]} 只；去掉创业板和科创板 {meta["dropped_board"]} 只、ST {meta["dropped_st"]} 只。入选 {meta["n"]} 只，延续 {meta["cont"]}，回调 {meta["pull"]}。走势按前复权收盘连线，绿线是延续，褐线是回调。</p>
+  <p class="meta">库内 {meta["in_db"]} 只；去掉创业板和科创板 {meta["dropped_board"]} 只、ST {meta["dropped_st"]} 只。入选 {meta["n"]} 只，延续 {meta["cont"]}，回调 {meta["pull"]}，分成 {len(meta["groups"])} 类。</p>
 </main>
 <script>
 const ROWS = {data};
-const state = {{ q: "", state: "全部", board: "全部", liq: "全部", sort: "ret60", dir: -1 }};
+const state = {{ q: "", state: "全部", board: "全部", group: "全部", liq: "全部", sort: "ret60", dir: -1 }};
 
 function pct(n) {{
   return (n > 0 ? "+" : "") + n.toFixed(1) + "%";
 }}
 function esc(s) {{
   return String(s).replace(/[&<>"']/g, (c) => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
-}}
-function spark(values, up) {{
-  const w = 108, h = 32;
-  const lo = Math.min(...values), hi = Math.max(...values);
-  const span = hi - lo || 1;
-  const pts = values.map((v, i) => {{
-    const x = values.length === 1 ? w / 2 : (i / (values.length - 1)) * (w - 4) + 2;
-    const y = h - 2 - ((v - lo) / span) * (h - 6);
-    return x.toFixed(1) + "," + y.toFixed(1);
-  }}).join(" ");
-  const color = up ? "#1f4d3a" : "#8a5a12";
-  return `<svg class="spark" width="${{w}}" height="${{h}}" viewBox="0 0 ${{w}} ${{h}}" aria-label="近60日收盘"><polyline fill="none" stroke="${{color}}" stroke-width="1.5" points="${{pts}}"/></svg>`;
 }}
 function mark(sel, attr, cur) {{
   document.querySelectorAll(sel).forEach((b) => {{
@@ -386,13 +413,13 @@ function filtered() {{
   const rows = ROWS.filter((r) => {{
     if (state.state !== "全部" && r.state !== state.state) return false;
     if (state.board !== "全部" && r.board !== state.board) return false;
+    if (state.group !== "全部" && r.group !== state.group) return false;
     if (state.liq === "1" && r.amt < 1) return false;
-    if (q && !(r.code + " " + r.name + " " + r.industry).includes(q)) return false;
+    if (q && !(r.code + " " + r.name + " " + r.industry + " " + r.group).includes(q)) return false;
     return true;
   }});
   const k = state.sort, dir = state.dir;
   rows.sort((a, b) => {{
-    if (k === "spark") return 0;
     const av = a[k], bv = b[k];
     if (typeof av === "number") return (av - bv) * dir;
     return String(av).localeCompare(String(bv), "zh") * dir;
@@ -402,6 +429,7 @@ function filtered() {{
 function render() {{
   mark("#state button", "data-state", state.state);
   mark("#board button", "data-board", state.board);
+  mark("#group button", "data-group", state.group);
   mark("#liq button", "data-liq", state.liq);
   const rows = filtered();
   const cont = rows.filter((r) => r.state === "延续").length;
@@ -416,6 +444,7 @@ function render() {{
     <td>${{esc(r.code)}}</td>
     <td><a href="${{esc(r.xq)}}" target="_blank" rel="noopener">${{esc(r.name)}}</a></td>
     <td>${{esc(r.board)}}</td>
+    <td>${{esc(r.group)}}</td>
     <td><span class="tag">${{esc(r.state)}}</span></td>
     <td class="num">${{r.close.toFixed(2)}}</td>
     <td class="num">${{pct(r.ret60)}}</td>
@@ -424,16 +453,15 @@ function render() {{
     <td class="num">${{pct(r.above60)}}</td>
     <td class="num">${{r.amt.toFixed(2)}}</td>
     <td>${{esc(r.industry)}}</td>
-    <td>${{spark(r.spark, r.state === "延续")}}</td>
   </tr>`).join("") || `<tr><td colspan="12">这个筛选下没有股票</td></tr>`;
 }}
 document.getElementById("q").addEventListener("input", (e) => {{ state.q = e.target.value; render(); }});
 document.querySelectorAll("[data-state]").forEach((b) => b.addEventListener("click", () => {{ state.state = b.dataset.state; render(); }}));
 document.querySelectorAll("[data-board]").forEach((b) => b.addEventListener("click", () => {{ state.board = b.dataset.board; render(); }}));
+document.querySelectorAll("[data-group]").forEach((b) => b.addEventListener("click", () => {{ state.group = b.dataset.group; render(); }}));
 document.querySelectorAll("[data-liq]").forEach((b) => b.addEventListener("click", () => {{ state.liq = b.dataset.liq; render(); }}));
 document.querySelectorAll("th").forEach((th) => th.addEventListener("click", () => {{
   const k = th.dataset.k;
-  if (k === "spark") return;
   if (state.sort === k) state.dir *= -1;
   else {{ state.sort = k; state.dir = typeof ROWS[0][k] === "number" ? -1 : 1; }}
   render();
