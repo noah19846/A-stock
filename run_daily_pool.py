@@ -1561,7 +1561,7 @@ def run_one_day(
         if send_mail:
             import pool_mail
 
-            log("[4b/4] 发送信号池邮件（含上涨趋势）…")
+            log("[4b/4] 发送信号池邮件，并另发上涨趋势…")
             pool_mail.send_pool_mail(asof, panels)
 
     return (

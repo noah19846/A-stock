@@ -186,11 +186,9 @@ def spark_svg(values: list[float], *, up: bool) -> str:
     )
 
 
-def mail_section(root: Path | None = None) -> str:
-    """给信号池邮件用的静态片段：名称链雪球，右侧是 60 日走势。"""
+def _mail_cards(rows: list[dict]) -> str:
     import html as html_mod
 
-    meta, rows = screen(root or ROOT)
     cards: list[str] = []
     for r in rows:
         up = r["state"] == "延续"
@@ -211,19 +209,48 @@ def mail_section(root: Path | None = None) -> str:
             f"{spark_svg(r['spark'], up=up)}"
             "</article>"
         )
-    body = "".join(cards) or '<p style="color:#5c6570">暂无</p>'
-    return (
-        '<section style="margin:18px 0 8px">'
-        '<div style="display:flex;justify-content:space-between;align-items:baseline">'
-        '<h2 style="margin:0;font-size:18px">上涨趋势</h2>'
-        f'<span style="color:#5c6570">{meta["n"]}</span></div>'
-        '<p style="color:#5c6570;font-size:12px;margin:6px 0 10px">'
-        f'库内截至 {html_mod.escape(meta["asof"])} · '
-        f'延续 {meta["cont"]} · 回调 {meta["pull"]} · '
-        "已去掉 ST、创业板、科创板。绿线为延续，褐线为回调。"
-        "</p>"
-        f"{body}</section>"
+    return "".join(cards) or '<p style="color:#5c6570">暂无</p>'
+
+
+def mail_html(meta: dict, rows: list[dict]) -> str:
+    """单独一封上涨趋势邮件。不嵌进信号池正文，避免被摘要挤到最底下。"""
+    import html as html_mod
+
+    asof = html_mod.escape(str(meta["asof"]))
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>上涨趋势 {asof}</title>
+</head>
+<body style="margin:0;padding:12px;background:#f0f2f5;color:#1a1d21;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:15px;line-height:1.45">
+  <h1 style="margin:0 0 6px;font-size:22px">上涨趋势 · {asof}</h1>
+  <p style="margin:0 0 12px;color:#5c6570;font-size:13px">
+    库内股票 · 延续 {meta["cont"]} · 回调 {meta["pull"]} · 共 {meta["n"]} 只。
+    已去掉 ST、创业板、科创板。名称打开雪球。右侧是近 60 个交易日收盘，绿线为延续，褐线为回调。
+  </p>
+  {_mail_cards(rows)}
+</body>
+</html>
+"""
+
+
+def send_mail(root: Path | None = None) -> dict:
+    """发上涨趋势专信。主题与信号池分开，方便在收件箱里直接看到。"""
+    import pool_mail
+
+    meta, rows = screen(root or ROOT)
+    pool_mail.send_html_mail(
+        subject=f"上涨趋势 {meta['asof']}",
+        html_body=mail_html(meta, rows),
     )
+    print(
+        f"上涨趋势邮件 {meta['asof']}  入选 {meta['n']}"
+        f"  延续 {meta['cont']}  回调 {meta['pull']}",
+        flush=True,
+    )
+    return meta
 
 
 def render_html(meta: dict, rows: list[dict]) -> str:
