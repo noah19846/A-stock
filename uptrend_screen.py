@@ -2,7 +2,7 @@
 从 daily.db 里筛上涨趋势，写出可筛选的 HTML，并按行业大类发邮件。
 
 只使用库里有日线的股票。去掉名称含 ST 的、创业板（300/301）、科创板（688/689）。
-名称链到雪球。名单按申万三级行业收成大类，一类里延续在前，再按 60 日涨幅。
+名称链到雪球。邮件先分成延续和回调，再按申万三级行业收成的大类，一类里按 60 日涨幅。
 
 上涨：60 日均线高于 20 个交易日前；20 日均线仍在 60 日均线之上；
 收盘在 60 日均线之上；近 60 个交易日涨幅为正。
@@ -206,39 +206,42 @@ def screen(root: Path) -> tuple[dict, list[dict]]:
     return meta, rows
 
 
-def _mail_groups(rows: list[dict]) -> str:
+def _mail_state(state: str, rows: list[dict]) -> str:
     import html as html_mod
 
+    picked = [row for row in rows if row["state"] == state]
     buckets: dict[str, list[dict]] = {}
-    for row in rows:
+    for row in picked:
         buckets.setdefault(row["group"], []).append(row)
     names = sorted(buckets, key=lambda name: (name == "其他", -len(buckets[name]), name))
+    tone = "#1f4d3a" if state == "延续" else "#8a5a12"
+    note = "收盘仍在 20 日线上" if state == "延续" else "收盘已落到 20 日线下，60 日趋势还在"
+    parts = [
+        f'<h2 style="margin:22px 0 2px;font-size:20px;color:{tone}">{state}'
+        f'<span style="font-weight:500;font-size:14px"> · {len(picked)} 只</span></h2>',
+        f'<p style="margin:0 0 10px;color:#5c6570;font-size:12px">{note}</p>',
+    ]
     if not names:
-        return '<p style="color:#5c6570">暂无</p>'
-
-    parts: list[str] = []
+        parts.append('<p style="color:#5c6570">暂无</p>')
+        return "".join(parts)
     for name in names:
         items = buckets[name]
-        cont = sum(1 for row in items if row["state"] == "延续")
         lines: list[str] = []
         for row in items:
-            tone = "#1f4d3a" if row["state"] == "延续" else "#8a5a12"
             industry = html_mod.escape(row["industry"].replace("Ⅲ", ""))
             lines.append(
                 '<div style="padding:7px 0;border-top:1px solid #ece7df">'
                 f'<a href="{html_mod.escape(row["xq"])}" style="color:#1a1d21;'
                 'font-weight:600;text-decoration:none">'
                 f'{html_mod.escape(row["code"])} {html_mod.escape(row["name"])}</a>'
-                f'<span style="color:{tone};font-size:12px"> {html_mod.escape(row["state"])}</span>'
                 '<div style="color:#5c6570;font-size:12px;margin-top:2px">'
                 f"{industry} · 60日 {row['ret60']:+.1f}% · 20日 {row['ret20']:+.1f}%"
                 "</div></div>"
             )
         parts.append(
             '<section style="background:#fff;border-radius:12px;padding:12px 14px;margin:0 0 12px">'
-            f'<h2 style="margin:0;font-size:17px">{html_mod.escape(name)}'
-            f'<span style="color:#5c6570;font-weight:500;font-size:13px"> · {len(items)} 只</span></h2>'
-            f'<p style="margin:2px 0 0;color:#5c6570;font-size:12px">延续 {cont} · 回调 {len(items) - cont}</p>'
+            f'<h3 style="margin:0 0 2px;font-size:16px;color:{tone}">{html_mod.escape(name)}'
+            f'<span style="color:#5c6570;font-weight:500;font-size:13px"> · {len(items)} 只</span></h3>'
             f'{"".join(lines)}'
             "</section>"
         )
@@ -246,7 +249,7 @@ def _mail_groups(rows: list[dict]) -> str:
 
 
 def mail_html(meta: dict, rows: list[dict]) -> str:
-    """单独一封上涨趋势邮件。按行业大类分段，不画走势。"""
+    """单独一封上涨趋势邮件。先分延续和回调，再按行业大类分段。"""
     import html as html_mod
 
     asof = html_mod.escape(str(meta["asof"]))
@@ -259,11 +262,12 @@ def mail_html(meta: dict, rows: list[dict]) -> str:
 </head>
 <body style="margin:0;padding:12px;background:#f0f2f5;color:#1a1d21;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:15px;line-height:1.45">
   <h1 style="margin:0 0 6px;font-size:22px">上涨趋势 · {asof}</h1>
-  <p style="margin:0 0 12px;color:#5c6570;font-size:13px">
-    库内股票 · 延续 {meta["cont"]} · 回调 {meta["pull"]} · 共 {meta["n"]} 只，分成 {len(meta["groups"])} 类。
-    已去掉 ST、创业板、科创板。名称打开雪球。一类里先列延续，再按 60 日涨幅从高到低。
+  <p style="margin:0 0 4px;color:#5c6570;font-size:13px">
+    库内股票 · 共 {meta["n"]} 只。先分延续 {meta["cont"]}、回调 {meta["pull"]}，再按行业大类。
+    已去掉 ST、创业板、科创板。名称打开雪球。一类里按 60 日涨幅从高到低。
   </p>
-  {_mail_groups(rows)}
+  {_mail_state("延续", rows)}
+  {_mail_state("回调", rows)}
 </body>
 </html>
 """
